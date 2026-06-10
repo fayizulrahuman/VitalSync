@@ -7,6 +7,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Audio } from 'expo-av'; // ✅ back to expo-av
 import { useFocusEffect } from '@react-navigation/native';
 import { MedicineContext } from '../context/MedicineContext';
+import { backupDataToCloud } from '../CloudSync';
+import { auth } from '../firebaseConfig';
 
 const MOODS = [
   { level: 1, label: 'Very Bad', color: '#FF3B30', emoji: '😡' },
@@ -98,6 +100,9 @@ export default function MentalHealthScreen({ navigation }) {
         showAlert("Streak Increased! 🔥", `You have prioritized your mental health for ${newStreak} days in a row!`, "success");
       }
     }
+    
+    // 🛑 FIXED: Trigger cloud backup for tasks and streak
+    if (auth.currentUser) backupDataToCloud(auth.currentUser.uid);
   };
 
   const handleSetMood = (level) => {
@@ -105,6 +110,9 @@ export default function MentalHealthScreen({ navigation }) {
     AsyncStorage.setItem('@vital_sync_today_mood', level.toString());
     updateGraph(level);
     markTaskDone('mood');
+    
+    // 🛑 FIXED: Trigger cloud backup for mood
+    if (auth.currentUser) backupDataToCloud(auth.currentUser.uid);
   };
 
   const updateGraph = (todayLevel) => {
@@ -119,63 +127,60 @@ export default function MentalHealthScreen({ navigation }) {
   };
 
   // ----- Audio Functions (expo-av - working) -----
-  const playAudio = async (trackNum) => {
-    // Stop any currently playing sound
-    if (sound) {
-      await sound.stopAsync();
-      await sound.unloadAsync();
-      setSound(null);
-      setIsPlaying(false);
-    }
+  // 🛑 FIXED: Use a Ref to hold the sound so it instantly updates and never overlaps
+  const soundRef = useRef(null);
 
+  const playAudio = async (trackNum) => {
     try {
+      // Instantly kill any currently playing sound
+      if (soundRef.current) {
+        await soundRef.current.stopAsync();
+        await soundRef.current.unloadAsync();
+        soundRef.current = null;
+      }
+
       let audioSource;
       if (trackNum === 1) audioSource = require('../assets/relax1.mp3');
       else if (trackNum === 2) audioSource = require('../assets/relax2.mp3');
       else if (trackNum === 3) audioSource = require('../assets/relax3.mp3');
-      else throw new Error('Invalid track number');
 
       const { sound: newSound } = await Audio.Sound.createAsync(
         audioSource,
         { shouldPlay: true, isLooping: true }
       );
 
-      setSound(newSound);
+      soundRef.current = newSound; // Save to Ref instantly
       setActiveTrack(trackNum);
       setIsPlaying(true);
 
-      // Optional: listen for playback finish (though looped)
-      newSound.setOnPlaybackStatusUpdate((status) => {
-        if (status.didJustFinish && !status.isLooping) {
-          setIsPlaying(false);
-          setActiveTrack(null);
-        }
-      });
     } catch (error) {
       console.error('Audio playback error:', error);
-      let errorMsg = 'Could not play audio. ';
-      if (error.message && (error.message.includes('No such file') || error.message.includes('failed to load'))) {
-        errorMsg += `File relax${trackNum}.mp3 not found in assets folder.`;
-      } else {
-        errorMsg += error.message;
-      }
-      showAlert('Audio Error', errorMsg, 'error');
+      showAlert('Audio Error', 'Could not play audio track.', 'error');
     }
   };
 
   const stopAudio = async () => {
-    if (sound) {
+    if (soundRef.current) {
       try {
-        await sound.stopAsync();
-        await sound.unloadAsync();
+        await soundRef.current.stopAsync();
+        await soundRef.current.unloadAsync();
       } catch (e) {
         console.warn('Stop audio error', e);
       }
-      setSound(null);
-      setIsPlaying(false);
-      setActiveTrack(null);
+      soundRef.current = null;
     }
+    setIsPlaying(false);
+    setActiveTrack(null);
   };
+
+  // Ensure audio stops if user leaves the screen
+  useEffect(() => {
+    return () => {
+      if (soundRef.current) {
+        soundRef.current.unloadAsync().catch(() => {});
+      }
+    };
+  },[]);
 
   // ----- Breathing exercise (unchanged) -----
   const startBreathingExercise = () => {

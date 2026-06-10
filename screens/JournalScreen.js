@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList, Keyboard
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { backupDataToCloud } from '../CloudSync';
+import { auth } from '../firebaseConfig';
 
 export default function JournalScreen({ navigation }) {
   const [entry, setEntry] = useState('');
@@ -34,6 +36,11 @@ export default function JournalScreen({ navigation }) {
     const today = new Date().toDateString();
     await AsyncStorage.setItem(`@vital_sync_journal_done_${today}`, 'true');
 
+    // 🛑 TRIGGER CLOUD BACKUP
+    if (auth.currentUser) {
+      backupDataToCloud(auth.currentUser.uid);
+    }
+
     setEntry('');
   };
 
@@ -41,8 +48,13 @@ export default function JournalScreen({ navigation }) {
     const updated = pastEntries.filter(e => e.id !== id);
     setPastEntries(updated);
     await AsyncStorage.setItem('@vital_sync_journals', JSON.stringify(updated));
-  };
 
+    // 🛑 TRIGGER CLOUD BACKUP
+    if (auth.currentUser) {
+      backupDataToCloud(auth.currentUser.uid);
+    }
+  };
+  
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.header}>

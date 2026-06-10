@@ -3,6 +3,9 @@ import { View, Text, TouchableOpacity, StyleSheet, Modal, Platform } from 'react
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import * as Notifications from 'expo-notifications';
+// 🛑 IMPORT CLOUD SYNC
+import { backupDataToCloud } from '../CloudSync';
+import { auth } from '../firebaseConfig';
 
 export const MedicineContext = createContext();
 
@@ -19,11 +22,8 @@ export const MedicineProvider = ({ children }) => {
   useEffect(() => {
     const loadMedicines = async () => {
       try {
-        // Request Notification Permissions on load
         const { status: existingStatus } = await Notifications.getPermissionsAsync();
-        if (existingStatus !== 'granted') {
-          await Notifications.requestPermissionsAsync();
-        }
+        if (existingStatus !== 'granted') await Notifications.requestPermissionsAsync();
 
         const storedMeds = await AsyncStorage.getItem('@vital_sync_meds');
         if (storedMeds) {
@@ -40,20 +40,37 @@ export const MedicineProvider = ({ children }) => {
         setIsLoaded(true);
       }
     };
+
     loadMedicines();
+
+    // 🛑 NEW: Watch for Logout. If a user logs out, wipe the context memory instantly!
+    const unsubscribe = auth.onAuthStateChanged((user) => {
+      if (!user) {
+        setMedicines([]); // Clear RAM
+      }
+    });
+
+    return () => unsubscribe(); // Cleanup listener
   }, []);
 
+  // 🛑 THE MASTER SAVE HOOK
+  // Every time the 'medicines' array changes (add, delete, or mark taken), this effect fires.
+  // It saves to local storage AND pushes the new list to the cloud.
   useEffect(() => {
     if (isLoaded) {
-      AsyncStorage.setItem('@vital_sync_meds', JSON.stringify(medicines));
+      AsyncStorage.setItem('@vital_sync_meds', JSON.stringify(medicines))
+        .then(() => {
+          // Trigger the cloud backup instantly after local save completes
+          if (auth.currentUser) {
+            backupDataToCloud(auth.currentUser.uid);
+          }
+        });
     }
   }, [medicines, isLoaded]);
 
   const lowStockMedicines = medicines.filter(med => med.remainingQuantity <= 5);
 
-  // --- NATIVE NOTIFICATION SCHEDULER ---
   const addMedicine = async (newMed) => {
-    // 1. Schedule Native Push Notifications for every time slot
     let updatedTimes = [];
     for (let timeSlot of newMed.times) {
       let notifId = null;
@@ -67,7 +84,7 @@ export const MedicineProvider = ({ children }) => {
           trigger: {
             hour: timeSlot.hour,
             minute: timeSlot.minute,
-            repeats: true, // Rings every day at this exact time!
+            repeats: true, 
           },
         });
       } catch (e) {
@@ -84,7 +101,6 @@ export const MedicineProvider = ({ children }) => {
   const deleteMedicine = async (id) => {
     const medToDelete = medicines.find(m => m.id === id);
     if (medToDelete) {
-      // 2. Cancel the native alarms so they don't ring after deletion
       for (let timeSlot of medToDelete.times) {
         if (timeSlot.notificationId) {
           await Notifications.cancelScheduledNotificationAsync(timeSlot.notificationId);

@@ -5,6 +5,8 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Svg, { Circle } from 'react-native-svg';
 import { useNavigation } from '@react-navigation/native';
 import { MedicineContext } from '../context/MedicineContext';
+import { backupDataToCloud } from '../CloudSync';
+import { auth } from '../firebaseConfig';
 
 export default function RemindersScreen({ navigation }) {
   const { medicines, lowStockMedicines, markAsTaken, showAlert } = useContext(MedicineContext);
@@ -251,7 +253,7 @@ const styles = StyleSheet.create({
   headerTitleContainer: { alignItems: 'center' },
   headerTitle: { fontSize: 20, fontWeight: '800', color: '#1C1C1E', marginBottom: 2 },
   headerSubtitle: { fontSize: 13, color: '#8E8E93' },
-  heroImage: { width: 150, height: 110, borderRadius: 24, shadowColor: '#db1919', shadowOpacity: 0.1, shadowRadius: 8, elevation: 2 },
+  heroImage: { width: 150, height: 110},
   heroCard: { backgroundColor: '#FFFFFF', borderRadius: 28, padding: 20, marginBottom: 30, shadowColor: '#5E5CE6', shadowOpacity: 0.08, shadowRadius: 20, shadowOffset: { width: 0, height: 10 }, elevation: 6, borderWidth: 1, borderColor: '#FFFFFF' },
   heroTopRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
   heroLeft: { flex: 1 },

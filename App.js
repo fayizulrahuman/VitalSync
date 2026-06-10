@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { View, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import { useEffect, useState } from 'react';
+import { ActivityIndicator, View } from 'react-native';
 
 // --- Native Notification Handler ---
 // This tells the OS to show the banner and play a sound even when the app is open
@@ -16,6 +16,16 @@ Notifications.setNotificationHandler({
     shouldSetBadge: true,
   }),
 });
+
+if (Platform.OS === 'android') {
+  Notifications.setNotificationChannelAsync('medicine-reminders', {
+    name: 'Medicine Reminders',
+    importance: Notifications.AndroidImportance.MAX,
+    vibrationPattern: [0, 250, 250, 250],
+    lightColor: '#5E5CE6',
+    sound: true, // Force the sound to play
+  });
+}
 
 // Screens
 import AddMedicineScreen from './screens/AddMedicineScreen';

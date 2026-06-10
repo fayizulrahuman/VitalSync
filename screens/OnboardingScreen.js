@@ -6,6 +6,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
 import { auth } from '../firebaseConfig';
+import { backupDataToCloud } from '../CloudSync';
+
 
 export default function OnboardingScreen({ navigation }) {
   const [name, setName] = useState('');
@@ -20,28 +22,25 @@ export default function OnboardingScreen({ navigation }) {
     if (!name || !email || !password || !bloodGroup) {
       return Alert.alert("Required Fields", "Name, Email, Password, and Blood Group are required.");
     }
-    
     setIsLoading(true);
     try {
-      // 1. Create account in Firebase
-      await createUserWithEmailAndPassword(auth, email, password);
+      const userCred = await createUserWithEmailAndPassword(auth, email, password);
 
-      // 2. Save Data to local storage so it syncs to Profile, Home, and Emergency Blood
       await AsyncStorage.setItem('@vital_user_name', name);
       await AsyncStorage.setItem('@vital_user_age', age || 'N/A');
       await AsyncStorage.setItem('@vital_user_bg', bloodGroup);
-      await AsyncStorage.setItem('@vital_sync_blood', bloodGroup); // Used by Emergency screen
+      await AsyncStorage.setItem('@vital_sync_blood', bloodGroup); 
       await AsyncStorage.setItem('@vital_sync_weight', weight || '0');
       
-      // Auto-generate Health ID & Default Avatar
       const newId = `VTL-${Math.floor(Math.random() * 90000) + 10000}`;
       await AsyncStorage.setItem('@vital_health_id', newId);
       await AsyncStorage.setItem('@vital_user_avatar', JSON.stringify({ type: 'inbuilt', gender: 'male', index: 0 }));
       
-      // 3. Complete login flow
+      // 🛑 FIXED: Push to cloud right after creating the account!
+      await backupDataToCloud(userCred.user.uid);
+
       await AsyncStorage.setItem('@vital_is_logged_in', 'true');
       navigation.replace('MainTabs'); 
-
     } catch (error) {
       Alert.alert("Registration Failed", error.message);
     } finally {

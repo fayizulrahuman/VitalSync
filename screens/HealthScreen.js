@@ -1,3 +1,5 @@
+import { backupDataToCloud } from '../CloudSync';
+import { auth } from '../firebaseConfig';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -6,7 +8,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, Linking, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-// Conditionally import native Android pedometer
 let AndroidPedometer = null;
 if (Platform.OS === 'android') {
   try {
@@ -25,70 +26,120 @@ Notifications.setNotificationHandler({
 });
 
 export default function HealthScreen({ navigation }) {
-  // --- Core Health States ---
-  const [weight, setWeight] = useState('68.5');
+  const [weight, setWeight] = useState('');
   const [steps, setSteps] = useState(0);
   const [stepGoal, setStepGoal] = useState(8000);
-  const [heartRate, setHeartRate] = useState('72');
-  const [spo2, setSpo2] = useState('98');
+  const [heartRate, setHeartRate] = useState('0');
+  const [spo2, setSpo2] = useState('0');
   const [sleepTime, setSleepTime] = useState('0h 0m');
   
-  // --- Background Tracking State ---
   const [isBackgroundActive, setIsBackgroundActive] = useState(false);
-  
-  // --- Refs ---
   const pedometerSubscription = useRef(null);
   
-  // --- Modal States ---
   const [isAddRecordVisible, setIsAddRecordVisible] = useState(false);
   const [recordType, setRecordType] = useState('Weight');
   const [recordValue, setRecordValue] = useState('');
 
-  // --- PPG Camera States ---
   const [isPpgModalVisible, setPpgModalVisible] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [measurementProgress, setMeasurementProgress] = useState(0);
   const [isMeasuring, setIsMeasuring] = useState(false);
 
-  // --- Insights State ---
   const [currentInsightIndex, setCurrentInsightIndex] = useState(0);
   const insights = generateInsights(heartRate, spo2, steps, stepGoal);
 
-  // --- Initialize Permissions & Tracking ---
+  // 🛑 FIXED: Safe index calculation to prevent "undefined" crash
+  const safeInsightIndex = insights.length > 0 ? currentInsightIndex % insights.length : 0;
+  const activeInsight = insights[safeInsightIndex] || {};
+
   useEffect(() => {
+    let isScreenFocused = false;
+    let focusPollInterval = null;
+
     const initializeSystems = async () => {
       await requestNotifPermissions();
       if (Platform.OS === 'android' && AndroidPedometer) {
         await setupNativeAndroidTracking();
+      } else {
+        syncStepsFromStorage();
       }
     };
     
     initializeSystems();
     loadData();
 
+    // 1. Triggered when you look at the Health Screen
+    const unsubscribeFocus = navigation.addListener('focus', async () => {
+      isScreenFocused = true;
+      await loadData(); 
+      await syncStepsFromStorage(); 
+      
+      // FAILSAFE: Aggressive Live Polling
+      // Asks the hardware for the step count every 2.5 seconds while walking
+      if (Platform.OS === 'android' && AndroidPedometer) {
+          focusPollInterval = setInterval(async () => {
+              if (!isScreenFocused) return;
+              try {
+                  const nativeSteps = await AndroidPedometer.getStepsCountAsync();
+                  if (nativeSteps) {
+                      setSteps(prevSteps => {
+                          if (nativeSteps > prevSteps) {
+                              AsyncStorage.setItem('@vital_sync_steps_total', nativeSteps.toString());
+                              return nativeSteps;
+                          }
+                          return prevSteps;
+                      });
+                  }
+              } catch(e) {
+                  console.log("Live update check failed:", e);
+              }
+          }, 2500); 
+      }
+    });
+
+    // 2. Triggered when you leave the Health Screen (saves battery)
+    const unsubscribeBlur = navigation.addListener('blur', () => {
+      isScreenFocused = false;
+      if (focusPollInterval) clearInterval(focusPollInterval);
+    });
+
     const subscription = AppState.addEventListener('change', handleAppStateChange);
+    
     const insightInterval = setInterval(() => {
-      setCurrentInsightIndex((prev) => (prev + 1) % insights.length);
+      setCurrentInsightIndex((prev) => prev + 1);
     }, 5000);
     
     return () => {
+      unsubscribeFocus();
+      unsubscribeBlur();
       subscription.remove();
       clearInterval(insightInterval);
+      if (focusPollInterval) clearInterval(focusPollInterval);
       if (pedometerSubscription.current) pedometerSubscription.current.remove();
     };
-  }, []);
+  }, [navigation, isBackgroundActive]);
+
+  const syncStepsFromStorage = async () => {
+    try {
+      const storedSteps = await AsyncStorage.getItem('@vital_sync_steps_total');
+      if (storedSteps) {
+        const parsedSteps = parseInt(storedSteps);
+        setSteps(parsedSteps);
+        checkGoalAchievement(parsedSteps);
+      }
+    } catch (e) {
+      console.log("Failed to sync steps from storage:", e);
+    }
+  };
 
   const requestNotifPermissions = async () => {
     const { status } = await Notifications.getPermissionsAsync();
     if (status !== 'granted') await Notifications.requestPermissionsAsync();
   };
 
-  // --- NATIVE ANDROID STEP TRACKING (MODERN APPROACH) ---
   const setupNativeAndroidTracking = async () => {
     try {
       await AndroidPedometer.initialize();
-
-      // 1. Check & Request Physical Activity Permission
       const activityPerm = await AndroidPedometer.getActivityPermissionStatus();
       if (!activityPerm.granted) {
         const permResponse = await AndroidPedometer.requestPermissions();
@@ -97,27 +148,19 @@ export default function HealthScreen({ navigation }) {
           return;
         }
       }
-
-      // 2. Setup Persistent Background Service
       await AndroidPedometer.setupBackgroundUpdates({
         title: "VitalSync",
         contentTemplate: "Steps today: %d",
         style: "bigText",
       });
-
       setIsBackgroundActive(true);
-
-      // 3. Sync Initial Data
       const nativeSteps = await AndroidPedometer.getStepsCountAsync();
       await syncDailySteps(nativeSteps);
-
-      // 4. Listen for Hardware Updates
       pedometerSubscription.current = AndroidPedometer.subscribeToChange(async (event) => {
         setSteps(event.steps);
         await AsyncStorage.setItem('@vital_sync_steps_total', event.steps.toString());
         checkGoalAchievement(event.steps);
       });
-
     } catch (error) {
       console.error('Failed to start native pedometer:', error);
     }
@@ -126,7 +169,6 @@ export default function HealthScreen({ navigation }) {
   const syncDailySteps = async (nativeSteps) => {
     const todayKey = new Date().toDateString();
     const savedDate = await AsyncStorage.getItem('@vital_sync_step_date');
-    
     if (savedDate !== todayKey) {
       await AsyncStorage.setItem('@vital_sync_step_date', todayKey);
       await AsyncStorage.setItem('@vital_sync_steps_total', nativeSteps.toString());
@@ -141,28 +183,28 @@ export default function HealthScreen({ navigation }) {
   };
 
   const handleAppStateChange = async (nextAppState) => {
-    if (nextAppState === 'active' && isBackgroundActive && AndroidPedometer) {
-      const nativeSteps = await AndroidPedometer.getStepsCountAsync();
-      await syncDailySteps(nativeSteps);
+    if (nextAppState === 'active') {
+      if (isBackgroundActive && AndroidPedometer) {
+        const nativeSteps = await AndroidPedometer.getStepsCountAsync();
+        await syncDailySteps(nativeSteps);
+      } else {
+        syncStepsFromStorage();
+      }
     }
   };
 
-  // --- Dynamic Insights Engine ---
   function generateInsights(hr, o2, currentSteps, goal) {
     const hrVal = parseInt(hr);
     const o2Val = parseInt(o2);
     let generated = [];
-    
     if (hrVal >= 60 && hrVal <= 100) {
       generated.push({ title: "Great job!", text: "Your resting heart rate is in a healthy range.", icon: "heart-pulse", color: "#FF3B30", bg: "#FFF0F0" });
     } else {
       generated.push({ title: "HR Alert", text: "Your heart rate is outside the typical resting range.", icon: "alert-circle", color: "#FF9500", bg: "#FFF5E5" });
     }
-
     if (o2Val >= 95) {
       generated.push({ title: "Excellent Oxygen", text: "Your blood oxygen levels are optimal today.", icon: "water", color: "#32ADE6", bg: "#F0F8FF" });
     }
-
     if (currentSteps >= goal) {
       generated.push({ title: "Goal Met!", text: "You've reached your daily step goal. Keep moving!", icon: "shoe-sneaker", color: "#34C759", bg: "#F0FDF4" });
     } else {
@@ -171,11 +213,9 @@ export default function HealthScreen({ navigation }) {
     return generated;
   }
 
-  // --- Notifications & Storage ---
   const checkGoalAchievement = async (currentSteps) => {
     const today = new Date().toDateString();
     const lastNotifDate = await AsyncStorage.getItem('@vital_sync_last_goal_notif_date');
-    
     if (currentSteps >= stepGoal && lastNotifDate !== today) {
       await Notifications.scheduleNotificationAsync({
         content: { title: "🎉 Step Goal Achieved!", body: `You reached your goal of ${stepGoal} steps!`, data: { screen: "Health" } },
@@ -188,7 +228,6 @@ export default function HealthScreen({ navigation }) {
   const loadData = async () => {
     const keys = ['weight', 'hr', 'spo2', 'sleep', 'step_goal'];
     const values = await Promise.all(keys.map(k => AsyncStorage.getItem(`@vital_sync_${k}`)));
-    
     if (values[0]) setWeight(values[0]);
     if (values[1]) setHeartRate(values[1]);
     if (values[2]) setSpo2(values[2]);
@@ -200,15 +239,15 @@ export default function HealthScreen({ navigation }) {
     if (!recordValue) return;
     const typeMap = { 'Weight': setWeight, 'Sleep': setSleepTime, 'HR': setHeartRate, 'SpO2': setSpo2 };
     const storageMap = { 'Weight': 'weight', 'Sleep': 'sleep', 'HR': 'hr', 'SpO2': 'spo2' };
-    
     typeMap[recordType](recordValue);
     await AsyncStorage.setItem(`@vital_sync_${storageMap[recordType]}`, recordValue);
-    
     setRecordValue('');
     setIsAddRecordVisible(false);
+    if (auth.currentUser) {
+      backupDataToCloud(auth.currentUser.uid);
+    }
   };
 
-  // --- PPG Camera ---
   const startPpgMeasurement = async () => {
     if (!permission?.granted) await requestPermission();
     setPpgModalVisible(true);
@@ -232,12 +271,11 @@ export default function HealthScreen({ navigation }) {
   const finishMeasurement = async () => {
     const newHR = Math.floor(Math.random() * (85 - 65 + 1) + 65).toString();
     const newSpo2 = Math.floor(Math.random() * (100 - 95 + 1) + 95).toString();
-    
     setHeartRate(newHR);
     setSpo2(newSpo2);
     await AsyncStorage.setItem('@vital_sync_hr', newHR);
     await AsyncStorage.setItem('@vital_sync_spo2', newSpo2);
-    
+    if (auth.currentUser) backupDataToCloud(auth.currentUser.uid);
     setIsMeasuring(false);
     setPpgModalVisible(false);
   };
@@ -311,19 +349,20 @@ export default function HealthScreen({ navigation }) {
           </View>
         </View>
 
+        {/* 🛑 FIXED: Uses activeInsight to securely reference current variables */}
         <View style={styles.insightCard}>
           <View style={styles.insightLeft}>
-            <View style={[styles.insightIconWrap, {backgroundColor: insights[currentInsightIndex].bg}]}>
-              <MaterialCommunityIcons name={insights[currentInsightIndex].icon} size={24} color={insights[currentInsightIndex].color} />
+            <View style={[styles.insightIconWrap, {backgroundColor: activeInsight.bg}]}>
+              <MaterialCommunityIcons name={activeInsight.icon} size={24} color={activeInsight.color} />
             </View>
             <View style={{flex: 1, paddingRight: 10}}>
-              <Text style={styles.insightTitle}>{insights[currentInsightIndex].title}</Text>
-              <Text style={styles.insightText}>{insights[currentInsightIndex].text}</Text>
+              <Text style={styles.insightTitle}>{activeInsight.title}</Text>
+              <Text style={styles.insightText}>{activeInsight.text}</Text>
             </View>
           </View>
           <View style={styles.paginationDots}>
             {insights.map((_, i) => (
-              <View key={i} style={[styles.dot, currentInsightIndex === i && styles.dotActive]} />
+              <View key={i} style={[styles.dot, safeInsightIndex === i && styles.dotActive]} />
             ))}
           </View>
         </View>
@@ -386,24 +425,18 @@ export default function HealthScreen({ navigation }) {
         </View>
       </ScrollView>
 
-      {/* --- MODAL: ADD NEW RECORD --- */}
+      {/* MODALS */}
       <Modal visible={isAddRecordVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Add New Record</Text>
-            
             <View style={styles.metricSelector}>
               {['Weight', 'Sleep', 'HR', 'SpO2'].map(type => (
-                <TouchableOpacity 
-                  key={type} 
-                  style={[styles.metricTypeBtn, recordType === type && styles.metricTypeBtnActive]}
-                  onPress={() => setRecordType(type)}
-                >
+                <TouchableOpacity key={type} style={[styles.metricTypeBtn, recordType === type && styles.metricTypeBtnActive]} onPress={() => setRecordType(type)}>
                   <Text style={[styles.metricTypeText, recordType === type && styles.metricTypeTextActive]}>{type}</Text>
                 </TouchableOpacity>
               ))}
             </View>
-
             <TextInput 
               style={styles.input} 
               keyboardType={recordType === 'Sleep' ? 'default' : 'decimal-pad'} 
@@ -411,7 +444,6 @@ export default function HealthScreen({ navigation }) {
               onChangeText={setRecordValue} 
               placeholder={recordType === 'Sleep' ? "e.g. 7h 30m" : `Enter ${recordType} value`}
             />
-            
             <View style={styles.modalBtnRow}>
               <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setIsAddRecordVisible(false)}>
                 <Text style={styles.modalBtnCancelText}>Cancel</Text>
@@ -424,15 +456,11 @@ export default function HealthScreen({ navigation }) {
         </View>
       </Modal>
 
-      {/* --- MODAL: PPG CAMERA MEASUREMENT --- */}
       <Modal visible={isPpgModalVisible} transparent animationType="slide">
         <View style={styles.ppgOverlay}>
           <View style={styles.ppgContent}>
             <Text style={styles.ppgTitle}>Optical Vitals Measurement</Text>
-            <Text style={styles.ppgSubtitle}>
-              Place your index finger completely covering the rear camera lens and flashlight. Hold still.
-            </Text>
-
+            <Text style={styles.ppgSubtitle}>Place your index finger completely covering the rear camera lens and flashlight. Hold still.</Text>
             <View style={styles.cameraContainer}>
               {permission?.granted ? (
                 <CameraView style={styles.camera} facing="back">
@@ -442,7 +470,6 @@ export default function HealthScreen({ navigation }) {
                 <View style={styles.cameraPlaceholder}><Text>No Camera Access</Text></View>
               )}
             </View>
-
             {isMeasuring ? (
               <View style={{width: '100%', alignItems: 'center'}}>
                 <Text style={styles.measuringText}>Measuring... {measurementProgress}%</Text>
@@ -457,7 +484,6 @@ export default function HealthScreen({ navigation }) {
                 <Text style={styles.startPpgBtnText}>Begin Measurement</Text>
               </TouchableOpacity>
             )}
-
             <TouchableOpacity style={styles.cancelPpgBtn} onPress={() => { setPpgModalVisible(false); setIsMeasuring(false); }}>
               <Text style={styles.cancelPpgText}>Cancel</Text>
             </TouchableOpacity>

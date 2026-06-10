@@ -1,0 +1,16 @@
+# Standard Expo ignores
+node_modules/
+.expo/
+dist/
+web-build/
+
+# 🛑 ADD THESE TWO LINES: Block old local builds
+android/
+ios/
+
+# Keep these secrets hidden from the build server
+.env
+*.jks
+*.keystore
+
+# Notice that google-services.json is deliberately MISSING from this list!

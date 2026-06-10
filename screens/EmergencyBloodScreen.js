@@ -6,16 +6,16 @@ import { useContext, useEffect, useState } from 'react';
 import { Linking, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MedicineContext } from '../context/MedicineContext';
+import { backupDataToCloud } from '../CloudSync';
+import { auth } from '../firebaseConfig';
 
 export default function EmergencyBloodScreen({ navigation }) {
   const { showAlert } = useContext(MedicineContext);
 
   const [locationEnabled, setLocationEnabled] = useState(false);
-  const [bloodGroup, setBloodGroup] = useState('O+');
+  const [bloodGroup, setBloodGroup] = useState('-');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedChip, setSelectedChip] = useState(null);
-  
-  // FIX: Start empty to prevent overriding storage on reload
   const [contacts, setContacts] = useState([]); 
 
   const [modalVisible, setModalVisible] = useState(false);
@@ -37,7 +37,13 @@ export default function EmergencyBloodScreen({ navigation }) {
       } 
     };
     loadData();
-  }, []);
+
+    const unsubscribe = navigation.addListener('focus', () => {
+      loadData();
+    });
+
+    return unsubscribe;
+  }, [navigation]);
 
   const handleSOS = () => Linking.openURL('tel:108');
 
@@ -58,7 +64,6 @@ export default function EmergencyBloodScreen({ navigation }) {
     showAlert("Location Disabled", "Location services turned off.", "info");
   };
 
-  // FIX: Save directly inside the delete action
   const handleDeleteContact = (id, name) => {
     showAlert("Remove Contact", `Remove ${name} from emergency contacts?`, "error", [
         { text: "Cancel", style: "cancel" },
@@ -66,6 +71,11 @@ export default function EmergencyBloodScreen({ navigation }) {
             const updated = contacts.filter(c => c.id !== id);
             setContacts(updated);
             AsyncStorage.setItem('@vital_sync_emergency_contacts', JSON.stringify(updated));
+            
+            if (auth.currentUser) {
+              backupDataToCloud(auth.currentUser.uid);
+            }
+            
             showAlert("Removed", "Contact removed.", "success");
           } 
         }
@@ -73,7 +83,6 @@ export default function EmergencyBloodScreen({ navigation }) {
     );
   };
 
-  // FIX: Save directly inside the add action
   const handleAddContact = () => {
     if (!newContactName.trim() || !newContactPhone.trim()) {
       showAlert("Missing Info", "Please enter both name and phone number.", "error");
@@ -90,19 +99,15 @@ export default function EmergencyBloodScreen({ navigation }) {
     
     const updated = [...contacts, newContact];
     setContacts(updated);
-    AsyncStorage.setItem('@vital_sync_emergency_contacts', JSON.stringify(updated)); // Save safely!
+    AsyncStorage.setItem('@vital_sync_emergency_contacts', JSON.stringify(updated)); 
+    
+    if (auth.currentUser) {
+      backupDataToCloud(auth.currentUser.uid);
+    }
     
     setNewContactName(''); setNewContactPhone(''); setNewContactRelation('');
     setModalVisible(false);
     showAlert("Contact Added", `${newContact.name} has been added.`, "success");
-  };
-
-  const handleUpdateBloodGroup = () => {
-    const types = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
-    const nextIndex = (types.indexOf(bloodGroup) + 1) % types.length;
-    const newBg = types[nextIndex];
-    setBloodGroup(newBg);
-    AsyncStorage.setItem('@vital_sync_blood', newBg);
   };
 
   const searchGovernmentBloodBank = () => {
@@ -112,17 +117,20 @@ export default function EmergencyBloodScreen({ navigation }) {
   const callContact = (phone) => Linking.openURL(`tel:${phone.replace(/[\s\-\(\)]/g, '')}`);
   const smsContact = (phone) => Linking.openURL(`sms:${phone.replace(/[\s\-\(\)]/g, '')}`);
 
-  const chips = ['O+', 'O-', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-'];
-
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.header}>
-        <TouchableOpacity style={styles.iconButton} onPress={() => navigation.goBack()}><Ionicons name="chevron-back" size={24} color="#1C1C1E" /></TouchableOpacity>
+        <TouchableOpacity style={styles.iconButton} onPress={() => navigation.goBack()}>
+          <Ionicons name="chevron-back" size={24} color="#1C1C1E" />
+        </TouchableOpacity>
         <View style={styles.headerTitleContainer}>
           <Text style={styles.headerTitle}>Emergency Blood</Text>
           <Text style={styles.headerSubtitle}>Get help. Save a life.</Text>
         </View>
-        <TouchableOpacity style={styles.sosButton} onPress={handleSOS}><Ionicons name="call" size={16} color="#FF3B30" /><Text style={styles.sosText}>SOS</Text></TouchableOpacity>
+        <TouchableOpacity style={styles.sosButton} onPress={handleSOS}>
+          <Ionicons name="call" size={16} color="#FF3B30" />
+          <Text style={styles.sosText}>SOS</Text>
+        </TouchableOpacity>
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -142,19 +150,30 @@ export default function EmergencyBloodScreen({ navigation }) {
           
           {!locationEnabled ? (
             <TouchableOpacity style={styles.locationStrip} onPress={handleEnableLocation}>
-              <View style={{flexDirection: 'row', alignItems: 'center'}}><Ionicons name="location" size={16} color="#FFFFFF" style={{marginRight: 6}} /><Text style={styles.locationStripText}>Enable location to find donors faster.</Text></View>
+              <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                <Ionicons name="location" size={16} color="#FFFFFF" style={{marginRight: 6}} />
+                <Text style={styles.locationStripText}>Enable location to find donors faster.</Text>
+              </View>
               <Text style={styles.locationStripAction}>Enable {'>'}</Text>
             </TouchableOpacity>
           ) : (
             <View style={[styles.locationStrip, {backgroundColor: '#34C759'}]}>
-              <View style={{flexDirection: 'row', alignItems: 'center'}}><Ionicons name="location" size={16} color="#FFFFFF" style={{marginRight: 6}} /><Text style={styles.locationStripText}>Location enabled. Scanning nearby...</Text></View>
-              <TouchableOpacity onPress={handleDisableLocation}><Text style={[styles.locationStripAction, {color: '#FFFFFF'}]}>Disable</Text></TouchableOpacity>
+              <View style={{flexDirection: 'row', alignItems: 'center'}}>
+                <Ionicons name="location" size={16} color="#FFFFFF" style={{marginRight: 6}} />
+                <Text style={styles.locationStripText}>Location enabled. Scanning nearby...</Text>
+              </View>
+              <TouchableOpacity onPress={handleDisableLocation}>
+                <Text style={[styles.locationStripAction, {color: '#FFFFFF'}]}>Disable</Text>
+              </TouchableOpacity>
             </View>
           )}
         </View>
 
         <View style={styles.searchSection}>
-          <View style={styles.sectionHeaderWrap}><Ionicons name="search" size={20} color="#FF3B30" style={{marginRight: 6}}/><Text style={styles.sectionTitle}>Find Blood Near You</Text></View>
+          <View style={styles.sectionHeaderWrap}>
+            <Ionicons name="search" size={20} color="#FF3B30" style={{marginRight: 6}}/>
+            <Text style={styles.sectionTitle}>Find Blood Near You</Text>
+          </View>
           <Text style={styles.sectionSub}>Search for donors or blood banks in your area.</Text>
 
           <View style={styles.searchRow}>
@@ -162,41 +181,52 @@ export default function EmergencyBloodScreen({ navigation }) {
               <TextInput style={styles.searchInput} placeholder="Enter blood group (e.g., O+)" value={searchQuery} onChangeText={setSearchQuery} />
               <Ionicons name="search" size={20} color="#C7C7CC" />
             </View>
-            <TouchableOpacity style={styles.useLocationBtn} onPress={handleEnableLocation}><Ionicons name="locate" size={16} color="#FF3B30" /><Text style={styles.useLocationText}>My Location</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.useLocationBtn} onPress={handleEnableLocation}>
+              <Ionicons name="locate" size={16} color="#FF3B30" />
+              <Text style={styles.useLocationText}>My Location</Text>
+            </TouchableOpacity>
           </View>
 
           <TouchableOpacity style={styles.govtSearchBtn} onPress={searchGovernmentBloodBank}>
             <Ionicons name="business" size={16} color="#FFFFFF" />
             <Text style={styles.govtSearchBtnText}>Search on Govt. Blood Bank</Text>
           </TouchableOpacity>
-
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.chipsScroll}>
-            {chips.map(chip => (
-              <TouchableOpacity key={chip} style={[styles.chip, selectedChip === chip && styles.chipActive]} onPress={() => setSelectedChip(selectedChip === chip ? null : chip)}>
-                <Text style={[styles.chipText, selectedChip === chip && styles.chipTextActive]}>{chip}</Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
         </View>
 
+        {/* 🛑 FIXED: Beautiful Balanced Read-Only Blood Group Card */}
         <View style={styles.myBloodCard}>
           <View style={styles.myBloodLeft}>
-            <View style={styles.myBloodHeader}><Ionicons name="water" size={18} color="#FF3B30" /><Text style={styles.myBloodTitle}>My Blood Group</Text></View>
+            <View style={styles.myBloodHeader}>
+              <Ionicons name="water" size={18} color="#FF3B30" />
+              <Text style={styles.myBloodTitle}>My Blood Group</Text>
+            </View>
             <Text style={styles.myBloodValue}>{bloodGroup}</Text>
-            <Text style={styles.myBloodSub}>{bloodGroup.includes('+') ? 'Positive' : 'Negative'}</Text>
+            <Text style={styles.myBloodSub}>
+              {bloodGroup === '-' ? 'Not Set' : bloodGroup.includes('+') ? 'Positive' : 'Negative'}
+            </Text>
           </View>
-          <TouchableOpacity style={styles.updateBgWrap} onPress={handleUpdateBloodGroup}>
-            <View style={{flexDirection: 'row', alignItems: 'center', marginBottom: 4}}><MaterialCommunityIcons name="pencil" size={16} color="#FF3B30" /><Text style={styles.updateBgText}>Update Blood Group</Text></View>
-            <Text style={styles.updateBgSub}>Keeping this updated helps us find compatible donors.</Text>
-            <Ionicons name="chevron-forward" size={16} color="#1C1C1E" style={{position: 'absolute', right: 0, top: 15}} />
-          </TouchableOpacity>
+
+          <View style={styles.myBloodRight}>
+            <View style={styles.statusPill}>
+              <Ionicons name="shield-checkmark" size={12} color="#15803D" />
+              <Text style={styles.statusPillText}>Profile Synced</Text>
+            </View>
+            <Text style={styles.rightSideDescription}>
+              Your blood type is securely linked. In a critical medical scenario, this instantly assists emergency networks.
+            </Text>
+          </View>
         </View>
 
         {/* EMERGENCY CONTACTS */}
         <View style={styles.contactsSection}>
           <View style={styles.sectionHeaderRow}>
-            <View style={{flexDirection: 'row', alignItems: 'center'}}><Ionicons name="call" size={20} color="#FF3B30" style={{marginRight: 6}}/><Text style={styles.sectionTitle}>Emergency Contacts</Text></View>
-            <TouchableOpacity onPress={() => setModalVisible(true)}><Text style={styles.manageText}>Add Contact</Text></TouchableOpacity>
+            <View style={{flexDirection: 'row', alignItems: 'center'}}>
+              <Ionicons name="call" size={20} color="#FF3B30" style={{marginRight: 6}}/>
+              <Text style={styles.sectionTitle}>Emergency Contacts</Text>
+            </View>
+            <TouchableOpacity onPress={() => setModalVisible(true)}>
+              <Text style={styles.manageText}>Add Contact</Text>
+            </TouchableOpacity>
           </View>
 
           {contacts.map((contact) => (
@@ -208,14 +238,18 @@ export default function EmergencyBloodScreen({ navigation }) {
                 <Text style={styles.contactPhone}>{contact.phone}</Text>
               </View>
               <View style={styles.contactActions}>
-                <TouchableOpacity style={styles.actionBtnSoft} onPress={() => callContact(contact.phone)}><Ionicons name="call" size={18} color="#FF3B30" /></TouchableOpacity>
-                <TouchableOpacity style={[styles.actionBtnSoft, {backgroundColor: '#F2F2F7'}]} onPress={() => handleDeleteContact(contact.id, contact.name)}><Ionicons name="trash" size={18} color="#8E8E93" /></TouchableOpacity>
+                <TouchableOpacity style={styles.actionBtnSoft} onPress={() => callContact(contact.phone)}>
+                  <Ionicons name="call" size={18} color="#FF3B30" />
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.actionBtnSoft, {backgroundColor: '#F2F2F7'}]} onPress={() => handleDeleteContact(contact.id, contact.name)}>
+                  <Ionicons name="trash" size={18} color="#8E8E93" />
+                </TouchableOpacity>
               </View>
             </View>
           ))}
         </View>
 
-        {/* NEW DONORS DIRECTORY NAVIGATION CARD */}
+        {/* DONORS DIRECTORY NAVIGATION CARD */}
         <TouchableOpacity style={styles.directoryCard} onPress={() => navigation.navigate('DonorsList')} activeOpacity={0.8}>
           <View style={styles.directoryLeft}>
             <View style={styles.directoryIconBox}>
@@ -236,7 +270,9 @@ export default function EmergencyBloodScreen({ navigation }) {
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Add Emergency Contact</Text>
-              <TouchableOpacity onPress={() => setModalVisible(false)}><Ionicons name="close" size={24} color="#1C1C1E" /></TouchableOpacity>
+              <TouchableOpacity onPress={() => setModalVisible(false)}>
+                <Ionicons name="close" size={24} color="#1C1C1E" />
+              </TouchableOpacity>
             </View>
             <View style={styles.modalInputGroup}>
               <Text style={styles.modalLabel}>Name</Text>
@@ -251,8 +287,12 @@ export default function EmergencyBloodScreen({ navigation }) {
               <TextInput style={styles.modalInput} placeholder="e.g., 9876543210" value={newContactPhone} onChangeText={setNewContactPhone} keyboardType="phone-pad" />
             </View>
             <View style={styles.modalButtons}>
-              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setModalVisible(false)}><Text style={styles.modalCancelText}>Cancel</Text></TouchableOpacity>
-              <TouchableOpacity style={styles.modalAddBtn} onPress={handleAddContact}><Text style={styles.modalAddText}>Add Contact</Text></TouchableOpacity>
+              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setModalVisible(false)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalAddBtn} onPress={handleAddContact}>
+                <Text style={styles.modalAddText}>Add Contact</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
@@ -292,23 +332,21 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, fontSize: 14, color: '#1C1C1E' },
   useLocationBtn: { flexDirection: 'row', alignItems: 'center' },
   useLocationText: { color: '#FF3B30', fontSize: 12, fontWeight: '700', marginLeft: 4 },
-  searchActionRow: { marginBottom: 15 },
   govtSearchBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FF3B30', paddingVertical: 12, borderRadius: 16, gap: 8 },
   govtSearchBtnText: { color: '#FFFFFF', fontSize: 14, fontWeight: '700', marginLeft: 8 },
-  chipsScroll: { flexDirection: 'row' },
-  chip: { paddingHorizontal: 20, paddingVertical: 12, backgroundColor: '#FFFFFF', borderRadius: 12, marginRight: 10, borderWidth: 1, borderColor: '#F0F0F0' },
-  chipActive: { backgroundColor: '#FF3B30', borderColor: '#FF3B30' },
-  chipText: { fontSize: 15, fontWeight: '700', color: '#1C1C1E' },
-  chipTextActive: { color: '#FFFFFF' },
+  
+  // 🛑 UPDATED: Split Layout for Blood Card
   myBloodCard: { flexDirection: 'row', backgroundColor: '#FFFFFF', borderRadius: 24, padding: 20, marginBottom: 25, shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 10, elevation: 3, borderWidth: 1, borderColor: '#F8F9FF' },
   myBloodLeft: { flex: 1, borderRightWidth: 1, borderRightColor: '#F0F0F0', paddingRight: 15 },
   myBloodHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
   myBloodTitle: { fontSize: 13, fontWeight: '700', color: '#1C1C1E', marginLeft: 6 },
   myBloodValue: { fontSize: 36, fontWeight: '800', color: '#FF3B30', marginBottom: 2 },
   myBloodSub: { fontSize: 13, color: '#8E8E93', fontWeight: '500' },
-  updateBgWrap: { flex: 1.2, paddingLeft: 15, justifyContent: 'center' },
-  updateBgText: { fontSize: 13, fontWeight: '700', color: '#FF3B30', marginLeft: 6 },
-  updateBgSub: { fontSize: 12, color: '#8E8E93', lineHeight: 18, marginTop: 4, paddingRight: 15 },
+  myBloodRight: { flex: 1.2, justifyContent: 'center', paddingLeft: 15 },
+  statusPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E8F5E9', alignSelf: 'flex-start', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, marginBottom: 8 },
+  statusPillText: { fontSize: 11, color: '#15803D', fontWeight: '700', marginLeft: 4 },
+  rightSideDescription: { fontSize: 12, color: '#8E8E93', lineHeight: 16, fontWeight: '500' },
+
   contactsSection: { marginBottom: 20 },
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
   manageText: { color: '#FF3B30', fontWeight: '700', fontSize: 14 },
@@ -321,14 +359,11 @@ const styles = StyleSheet.create({
   contactPhone: { fontSize: 13, color: '#8E8E93', fontWeight: '500' },
   contactActions: { flexDirection: 'row' },
   actionBtnSoft: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#FFF0F0', justifyContent: 'center', alignItems: 'center', marginLeft: 8 },
-  
-  // NEW: Donors Directory Card
   directoryCard: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FFFFFF', padding: 20, borderRadius: 24, marginBottom: 30, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 10, elevation: 3, borderWidth: 1, borderColor: '#F0F0F0' },
   directoryLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   directoryIconBox: { width: 48, height: 48, borderRadius: 16, backgroundColor: '#FF3B30', justifyContent: 'center', alignItems: 'center', marginRight: 15, shadowColor: '#FF3B30', shadowOpacity: 0.3, shadowRadius: 8 },
   directoryTitle: { fontSize: 16, fontWeight: '800', color: '#1C1C1E', marginBottom: 4 },
   directorySub: { fontSize: 12, color: '#8E8E93', fontWeight: '500' },
-
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: '#FFFFFF', borderRadius: 24, padding: 20, width: '85%', maxWidth: 400 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },

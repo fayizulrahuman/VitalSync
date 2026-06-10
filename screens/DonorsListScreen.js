@@ -4,6 +4,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MedicineContext } from '../context/MedicineContext';
+import { backupDataToCloud } from '../CloudSync';
+import { auth } from '../firebaseConfig';
 
 // --- YOUR COMPLETE DONOR DIRECTORY ---
 const STATIC_DONORS = [
@@ -255,6 +257,10 @@ export default function DonorsListScreen({ navigation }) {
     setDonors(updated);
     AsyncStorage.setItem('@vital_sync_donors_full', JSON.stringify(updated));
     setModalVisible(false);
+    
+    // 🛑 TRIGGER CLOUD BACKUP
+    if (auth.currentUser) backupDataToCloud(auth.currentUser.uid);
+
     setNewName(''); setNewPhone(''); setNewBg('');
     showAlert("Added", `${newDonor.name} is now in the directory.`, "success");
   };
@@ -266,6 +272,9 @@ export default function DonorsListScreen({ navigation }) {
           const updated = donors.filter(d => d.id !== id);
           setDonors(updated);
           AsyncStorage.setItem('@vital_sync_donors_full', JSON.stringify(updated));
+          
+          // 🛑 TRIGGER CLOUD BACKUP
+          if (auth.currentUser) backupDataToCloud(auth.currentUser.uid);
       }}
     ]);
   };

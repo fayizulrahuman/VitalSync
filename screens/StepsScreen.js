@@ -9,7 +9,8 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Svg, { Rect, Line, Text as SvgText } from 'react-native-svg';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
-import * as TaskManager from 'expo-task-manager';
+import { backupDataToCloud } from '../CloudSync';
+import { auth } from '../firebaseConfig';
 
 // Import pedometer modules
 import { Pedometer } from 'expo-sensors';
@@ -46,6 +47,9 @@ export default function StepsScreen({ navigation, route }) {
 
   const [isBackgroundActive, setIsBackgroundActive] = useState(false);
   const [permissionStatus, setPermissionStatus] = useState('checking');
+  
+  // Custom Alert State
+  const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '' });
 
   const pedometerSubscription = useRef(null);
   const appState = useRef(AppState.currentState);
@@ -109,11 +113,9 @@ export default function StepsScreen({ navigation, route }) {
 
   const setupAndroidBackgroundTracking = async () => {
     try {
-      // Initialize pedometer module
       const initialized = await AndroidPedometer.initialize();
       console.log('Pedometer initialized:', initialized);
 
-      // Check activity recognition permission
       const activityPerm = await AndroidPedometer.getActivityPermissionStatus();
       
       if (!activityPerm.granted) {
@@ -132,7 +134,6 @@ export default function StepsScreen({ navigation, route }) {
         }
       }
 
-      // Request notification permission for Android 13+
       if (Platform.Version >= 33) {
         const notifPerm = await AndroidPedometer.getNotificationPermissionStatus();
         if (!notifPerm.granted) {
@@ -142,7 +143,6 @@ export default function StepsScreen({ navigation, route }) {
 
       setPermissionStatus('granted');
 
-      // Setup background updates with persistent notification
       await AndroidPedometer.setupBackgroundUpdates({
         title: "Step Counter Active",
         contentTemplate: "You've taken %d steps today",
@@ -151,16 +151,13 @@ export default function StepsScreen({ navigation, route }) {
 
       setIsBackgroundActive(true);
 
-      // Show initial notification
       await showStepNotification(dailySteps);
 
-      // Subscribe to real-time updates
       const unsubscribe = AndroidPedometer.subscribeToChange(async (event) => {
         const todayKey = formatDateKey(new Date());
         await AsyncStorage.setItem(`@vital_steps_${todayKey}`, event.steps.toString());
         await AsyncStorage.setItem('@vital_sync_steps_total', event.steps.toString());
         
-        // Update UI if on today's view
         const currentViewKey = formatDateKey(selectedDate);
         if (currentViewKey === todayKey) {
           setDailySteps(event.steps);
@@ -185,7 +182,7 @@ export default function StepsScreen({ navigation, route }) {
           body: `You've taken ${steps.toLocaleString()} steps today (${percentage}% of your goal)!`,
           data: { screen: "Steps" },
         },
-        trigger: null, // Show immediately
+        trigger: null, 
       });
     } catch (error) {
       console.log('Notification error:', error);
@@ -197,7 +194,6 @@ export default function StepsScreen({ navigation, route }) {
     
     const todayKey = formatDateKey(new Date());
     
-    // If background tracking is active, don't duplicate
     if (isBackgroundActive && Platform.OS === 'android' && AndroidPedometer) {
       console.log('Background tracking already active');
       return;
@@ -350,25 +346,34 @@ export default function StepsScreen({ navigation, route }) {
     return selectedDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  const durationMinutes = Math.floor(dailySteps / 100);
-  const durationSeconds = Math.floor((dailySteps % 100) * 0.6);
-  const distanceMeters = Math.floor(dailySteps * 0.76);
-  const calories = Math.floor(dailySteps * 0.04);
-
   const saveGoal = async () => {
     const parsedGoal = parseInt(newGoal);
     if (!isNaN(parsedGoal) && parsedGoal > 0) {
       setGoal(parsedGoal);
       await AsyncStorage.setItem('@vital_sync_step_goal', parsedGoal.toString());
+      
+      if (auth.currentUser) backupDataToCloud(auth.currentUser.uid);
     }
     setGoalModalVisible(false);
   };
 
   const sendTestNotification = async () => {
     await showStepNotification(dailySteps);
-    Alert.alert('Notification Sent', 'Check your notification shade!');
+    setCustomAlert({ 
+      visible: true, 
+      title: "Notification Sent", 
+      message: "Check your notification shade!" 
+    });
   };
 
+  // --- DYNAMIC STEP CALCULATIONS (Updated Formulas) ---
+  const distanceMeters = Math.floor(dailySteps * 0.75);
+  const distanceDisplay = distanceMeters >= 1000 ? (distanceMeters / 1000).toFixed(2) + 'KM' : distanceMeters + 'M';
+  const caloriesBurned = Math.floor(dailySteps * 0.04);
+  const totalSeconds = Math.floor(dailySteps * 0.54);
+  const durationMins = Math.floor(totalSeconds / 60);
+  const durationSecs = totalSeconds % 60;
+  
   const chartHeight = 150;
   const maxBarValue = Math.max(...chartData, 100);
   const yAxisMid = Math.floor(maxBarValue / 2);
@@ -387,7 +392,6 @@ export default function StepsScreen({ navigation, route }) {
         </TouchableOpacity>
       </View>
 
-      {/* Background tracking indicator */}
       {isBackgroundActive && Platform.OS === 'android' && (
         <View style={styles.bgIndicator}>
           <MaterialCommunityIcons name="checkbox-marked-circle-outline" size={14} color="#34C759" />
@@ -454,12 +458,15 @@ export default function StepsScreen({ navigation, route }) {
           )}
         </View>
 
+        {/* Dynamic Bottom Metrics Row */}
         <View style={styles.metricsCard}>
           <View style={styles.metricItem}>
             <View style={[styles.iconCircle, {backgroundColor: '#FFF0F0'}]}>
               <MaterialCommunityIcons name="clock-outline" size={20} color="#FF3B30" />
             </View>
-            <Text style={styles.metricValue}>{durationMinutes}<Text style={styles.metricUnit}>M</Text> {durationSeconds}<Text style={styles.metricUnit}>S</Text></Text>
+            <Text style={styles.metricValue}>
+              {durationMins}<Text style={styles.metricUnitSmall}>M</Text> {durationSecs}<Text style={styles.metricUnitSmall}>S</Text>
+            </Text>
             <Text style={styles.metricLabel}>Duration</Text>
           </View>
           
@@ -467,7 +474,7 @@ export default function StepsScreen({ navigation, route }) {
             <View style={[styles.iconCircle, {backgroundColor: '#F0F8FF'}]}>
               <MaterialCommunityIcons name="map-marker-outline" size={20} color="#32ADE6" />
             </View>
-            <Text style={styles.metricValue}>{distanceMeters}<Text style={styles.metricUnit}>M</Text></Text>
+            <Text style={styles.metricValue}>{distanceDisplay}</Text>
             <Text style={styles.metricLabel}>Distance</Text>
           </View>
           
@@ -475,35 +482,72 @@ export default function StepsScreen({ navigation, route }) {
             <View style={[styles.iconCircle, {backgroundColor: '#FFF5E5'}]}>
               <MaterialCommunityIcons name="fire" size={20} color="#FF9500" />
             </View>
-            <Text style={styles.metricValue}>{calories}<Text style={styles.metricUnit}>KCAL</Text></Text>
+            <Text style={styles.metricValue}>
+              {caloriesBurned}<Text style={styles.metricUnitSmall}>KCAL</Text>
+            </Text>
             <Text style={styles.metricLabel}>Calories</Text>
           </View>
         </View>
         
       </ScrollView>
 
+      {/* FIXED Redesigned Premium Goal Modal Layout */}
       <Modal visible={isGoalModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Set Step Goal</Text>
-            <TextInput 
-              style={styles.input} 
-              keyboardType="number-pad" 
-              value={newGoal} 
-              onChangeText={setNewGoal} 
-              maxLength={5}
-            />
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.premiumGoalCard}>
+            <View style={styles.goalIconCircle}>
+              <MaterialCommunityIcons name="target" size={32} color="#34C759" />
+            </View>
+            <Text style={styles.modalTitle}>Set Daily Step Goal</Text>
+            <Text style={styles.modalSubtitle}>Adjust your daily activity targets to stay on track.</Text>
+            
+            <View style={styles.inputWrapper}>
+              <TextInput 
+                style={styles.premiumInput} 
+                keyboardType="number-pad" 
+                value={newGoal} 
+                onChangeText={setNewGoal} 
+                maxLength={5}
+                placeholder="8000"
+                placeholderTextColor="#C7C7CC"
+              />
+              <Text style={styles.inputUnitText}>steps</Text>
+            </View>
+            
             <View style={styles.modalBtnRow}>
               <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setGoalModalVisible(false)}>
                 <Text style={styles.modalBtnCancelText}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity style={styles.modalBtnSave} onPress={saveGoal}>
-                <Text style={styles.modalBtnSaveText}>Save</Text>
+                <Text style={styles.modalBtnSaveText}>Save Target</Text>
               </TouchableOpacity>
             </View>
           </View>
         </View>
       </Modal>
+
+      {/* Custom Alert Modal */}
+      <Modal visible={customAlert.visible} transparent animationType="fade">
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.alertCard}>
+            <View style={[styles.alertIconWrap, {backgroundColor: '#E8F5E9'}]}>
+              <Ionicons name="checkmark-circle" size={36} color="#34C759" />
+            </View>
+            <Text style={styles.alertTitle}>{customAlert.title}</Text>
+            <Text style={styles.alertMessage}>{customAlert.message}</Text>
+            
+            <View style={styles.alertBtnRow}>
+              <TouchableOpacity 
+                style={styles.alertBtnOk} 
+                onPress={() => setCustomAlert({ ...customAlert, visible: false })}
+              >
+                <Text style={styles.alertBtnOkText}>Okay</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
     </SafeAreaView>
   );
 }
@@ -538,19 +582,116 @@ const styles = StyleSheet.create({
   goalText: { color: '#8E8E93', fontSize: 14, marginBottom: 25, fontWeight: '600' },
   changeGoalBtn: { backgroundColor: '#34C759', paddingVertical: 14, paddingHorizontal: 40, borderRadius: 16, width: '100%', alignItems: 'center' },
   changeGoalBtnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
+  
+  // Custom Centered Modals Overlay
+  modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  
+  // Premium Goal Modal Card Styling
+  premiumGoalCard: { 
+    backgroundColor: '#FFFFFF', 
+    borderRadius: 28, 
+    padding: 25, 
+    width: '85%', 
+    alignItems: 'center', 
+    shadowColor: '#000', 
+    shadowOpacity: 0.15, 
+    shadowRadius: 20, 
+    elevation: 8 
+  },
+  goalIconCircle: { 
+    width: 64, 
+    height: 64, 
+    borderRadius: 32, 
+    backgroundColor: '#E8F5E9', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginBottom: 16 
+  },
+  modalTitle: { 
+    fontSize: 19, 
+    fontWeight: '800', 
+    color: '#1C1C1E', 
+    marginBottom: 6,
+    textAlign: 'center'
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    color: '#8E8E93',
+    fontWeight: '500',
+    textAlign: 'center',
+    marginBottom: 20,
+    paddingHorizontal: 10,
+    lineHeight: 18
+  },
+  inputWrapper: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F4F4FF',
+    borderRadius: 16,
+    paddingHorizontal: 20,
+    marginBottom: 25,
+    height: 56,
+  },
+  premiumInput: { 
+    flex: 1,
+    color: '#1C1C1E', 
+    fontSize: 20, 
+    fontWeight: '800',
+    paddingVertical: 0
+  },
+  inputUnitText: {
+    fontSize: 14,
+    color: '#5E5CE6',
+    fontWeight: '700',
+    marginLeft: 10
+  },
+  modalBtnRow: { 
+    flexDirection: 'row', 
+    width: '100%', 
+    gap: 12
+  },
+  modalBtnCancel: { 
+    flex: 1, 
+    height: 50,
+    justifyContent: 'center',
+    alignItems: 'center', 
+    borderRadius: 14, 
+    backgroundColor: '#F2F2F7'
+  },
+  modalBtnCancelText: { 
+    color: '#8E8E93', 
+    fontWeight: '700', 
+    fontSize: 15 
+  },
+  modalBtnSave: { 
+    flex: 1, 
+    height: 50,
+    justifyContent: 'center',
+    alignItems: 'center', 
+    borderRadius: 14, 
+    backgroundColor: '#34C759'
+  },
+  modalBtnSaveText: { 
+    color: '#FFFFFF', 
+    fontWeight: '700', 
+    fontSize: 15 
+  },
+
+  // Alert Card Styling
+  alertCard: { backgroundColor: '#FFFFFF', borderRadius: 24, padding: 30, width: '80%', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 15, elevation: 5 },
+  alertIconWrap: { width: 70, height: 70, borderRadius: 35, justifyContent: 'center', alignItems: 'center', marginBottom: 20 },
+  alertTitle: { fontSize: 20, fontWeight: '800', color: '#1C1C1E', marginBottom: 10, textAlign: 'center' },
+  alertMessage: { fontSize: 14, color: '#636366', textAlign: 'center', marginBottom: 25, lineHeight: 20 },
+  alertBtnRow: { flexDirection: 'row', width: '100%', justifyContent: 'center' },
+  alertBtnOk: { flex: 1, paddingVertical: 14, borderRadius: 14, alignItems: 'center', backgroundColor: '#5E5CE6' },
+  alertBtnOkText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
+
+  // Metrics Dashboard Row Styles
   metricsCard: { flexDirection: 'row', backgroundColor: '#FFFFFF', borderRadius: 24, marginHorizontal: 20, padding: 20, justifyContent: 'space-around', shadowColor: '#000', shadowOpacity: 0.04, shadowRadius: 15, elevation: 3, borderWidth: 1, borderColor: '#F0F0F0' },
   metricItem: { alignItems: 'center', flex: 1 },
   iconCircle: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
   metricValue: { color: '#1C1C1E', fontSize: 18, fontWeight: '800', marginBottom: 4 },
-  metricUnit: { fontSize: 11, color: '#8E8E93', fontWeight: '700' },
-  metricLabel: { color: '#8E8E93', fontSize: 12, fontWeight: '600' },
-  modalOverlay: { flex: 1, backgroundColor: 'hsla(0, 0%, 0%, 0.50)', justifyContent: 'center', alignItems: 'center' },
-  modalContent: { backgroundColor: '#FFFFFF', borderRadius: 24, padding: 25, width: '80%', alignItems: 'center' },
-  modalTitle: { color: '#1C1C1E', fontSize: 18, fontWeight: '800', marginBottom: 20 },
-  input: { backgroundColor: '#F4F4FF', color: '#1C1C1E', width: '100%', padding: 15, borderRadius: 16, fontSize: 22, textAlign: 'center', marginBottom: 25, fontWeight: '800' },
-  modalBtnRow: { flexDirection: 'row', width: '100%', justifyContent: 'space-between' },
-  modalBtnCancel: { flex: 1, padding: 16, alignItems: 'center', borderRadius: 16, backgroundColor: '#F2F2F7', marginRight: 10 },
-  modalBtnCancelText: { color: '#8E8E93', fontWeight: '800', fontSize: 15 },
-  modalBtnSave: { flex: 1, padding: 16, alignItems: 'center', borderRadius: 16, backgroundColor: '#34C759', marginLeft: 10 },
-  modalBtnSaveText: { color: '#FFFFFF', fontWeight: '800', fontSize: 15 }
+  metricUnitSmall: { fontSize: 10, color: '#8E8E93', fontWeight: '700' },
+  metricLabel: { color: '#8E8E93', fontSize: 12, fontWeight: '600' }
 });

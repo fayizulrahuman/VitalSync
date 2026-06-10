@@ -8,13 +8,14 @@ import { GoogleAuthProvider, sendPasswordResetEmail, signInWithCredential, signI
 import { useEffect, useState } from 'react';
 import { Image, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { restoreDataFromCloud } from '../CloudSync';
 import { auth } from '../firebaseConfig';
 
 WebBrowser.maybeCompleteAuthSession();
 
 // 🛑 IMPORTANT: Ensure these are your actual keys from Google Cloud Console
-const WEB_CLIENT_ID = '220826507850-gt2c3ffm6as04m5kbhm4733qc21kohhj.apps.googleusercontent.com';
-const ANDROID_CLIENT_ID = '182625049503-uhv60ok3177cgi7bjs4ksvj0pu6mtfek.apps.googleusercontent.com';
+const WEB_CLIENT_ID = process.env.EXPO_PUBLIC_WEB_CLIENT_ID;
+const ANDROID_CLIENT_ID = process.env.EXPO_PUBLIC_ANDROID_CLIENT_ID;
 
 export default function LoginScreen({ navigation }) {
   const [email, setEmail] = useState('');
@@ -29,14 +30,14 @@ export default function LoginScreen({ navigation }) {
     setCustomAlert({ visible: true, title, message, type });
   };
 
-  // --- Corrected Google Auth Setup ---
+  // --- Google Auth Setup ---
   const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
-    clientId: WEB_CLIENT_ID, // Required for Firebase
-    androidClientId: ANDROID_CLIENT_ID, // Required for the Standalone APK
+    clientId: WEB_CLIENT_ID, 
+    androidClientId: ANDROID_CLIENT_ID, 
     redirectUri: makeRedirectUri({
       scheme: 'vitalsync',
       useProxy: false,
-      native: 'vitalsync://' // Forces the exact Android scheme
+      native: 'vitalsync://' 
     }),
   });
 
@@ -47,6 +48,9 @@ export default function LoginScreen({ navigation }) {
       
       signInWithCredential(auth, credential)
         .then(async (userCred) => {
+          // 🛑 CLOUD SYNC: Restore data from Firestore immediately after Google Login
+          await restoreDataFromCloud(userCred.user.uid);
+          
           await syncDefaultUserData(userCred.user.displayName || 'User', 'UNKNOWN');
           navigation.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
         })
@@ -55,13 +59,10 @@ export default function LoginScreen({ navigation }) {
   }, [response]);
 
   const handleGoogleLogin = async () => {
-    // Safety check: Ensure the auth request has finished initializing
     if (!request) {
       showWarning("Please Wait", "Authentication service is still loading.", "info");
       return;
     }
-    
-    // Trigger the native prompt
     try {
       await promptAsync();
     } catch (error) {
@@ -73,7 +74,11 @@ export default function LoginScreen({ navigation }) {
     if (!email || !password) return showWarning("Missing Details", "Please enter both your email and password.", "warning");
     setIsLoading(true);
     try {
-      await signInWithEmailAndPassword(auth, email, password);
+      const userCred = await signInWithEmailAndPassword(auth, email, password);
+      
+      // 🛑 CLOUD SYNC: Restore data from Firestore immediately after Email Login
+      await restoreDataFromCloud(userCred.user.uid);
+      
       await AsyncStorage.setItem('@vital_is_logged_in', 'true');
       navigation.reset({ index: 0, routes: [{ name: 'MainTabs' }] }); 
     } catch (error) {
@@ -85,8 +90,28 @@ export default function LoginScreen({ navigation }) {
     }
   };
 
-  const handleGuestLogin = async () => {
-    await syncDefaultUserData('Guest User', 'O+');
+ const handleGuestLogin = async () => {
+    setIsLoading(true);
+    
+    // 1. Give them empty profile placeholders to edit later
+    await AsyncStorage.setItem('@vital_user_name', 'Guest User');
+    await AsyncStorage.setItem('@vital_user_bg', '');
+    await AsyncStorage.setItem('@vital_sync_blood', '');
+    await AsyncStorage.setItem('@vital_user_age', '');
+    await AsyncStorage.setItem('@vital_sync_weight', '');
+    
+    // 2. Zero out all health metrics
+    await AsyncStorage.setItem('@vital_sync_hr', '0');
+    await AsyncStorage.setItem('@vital_sync_spo2', '0');
+    await AsyncStorage.setItem('@vital_sync_steps_total', '0');
+    await AsyncStorage.setItem('@vital_sync_step_goal', '8000');
+    
+    // 3. Set a default generic avatar
+    await AsyncStorage.setItem('@vital_user_avatar', JSON.stringify({ type: 'inbuilt', gender: 'male', index: 0 }));
+    
+    await AsyncStorage.setItem('@vital_is_logged_in', 'true');
+    
+    setIsLoading(false);
     navigation.reset({ index: 0, routes: [{ name: 'MainTabs' }] });
   };
 
@@ -101,8 +126,12 @@ export default function LoginScreen({ navigation }) {
   };
 
   const syncDefaultUserData = async (name, bloodGroup) => {
-    await AsyncStorage.setItem('@vital_user_name', name);
-    await AsyncStorage.setItem('@vital_user_bg', bloodGroup);
+    const existingName = await AsyncStorage.getItem('@vital_user_name');
+    if (!existingName) await AsyncStorage.setItem('@vital_user_name', name);
+    
+    const existingBg = await AsyncStorage.getItem('@vital_user_bg');
+    if (!existingBg) await AsyncStorage.setItem('@vital_user_bg', bloodGroup);
+    
     await AsyncStorage.setItem('@vital_is_logged_in', 'true');
     const existingAvatar = await AsyncStorage.getItem('@vital_user_avatar');
     if (!existingAvatar) {
@@ -170,7 +199,6 @@ export default function LoginScreen({ navigation }) {
         </View>
       </SafeAreaView>
 
-      {/* Custom Alert Modal */}
       <Modal visible={customAlert.visible} transparent animationType="fade">
         <View style={styles.modalOverlayCenter}>
           <View style={styles.alertCard}>
@@ -200,35 +228,27 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1, paddingHorizontal: 25, justifyContent: 'space-between' },
   headerContainer: { marginTop: 60, alignItems: 'center' },
-  
   logoImage: { width: 140, height: 140, resizeMode: 'contain', alignSelf: 'center', marginBottom: 20 },
-  
   title: { fontSize: 28, fontWeight: '800', color: '#1C1C1E', marginBottom: 8 },
   subtitle: { fontSize: 15, color: '#8E8E93' },
-  
   formContainer: { marginTop: 40, backgroundColor: 'rgba(255,255,255,0.7)', padding: 25, borderRadius: 24, borderWidth: 1, borderColor: '#FFFFFF' },
   inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 16, paddingHorizontal: 15, marginBottom: 15, height: 55, borderWidth: 1, borderColor: '#F0F0F0' },
   inputIcon: { marginRight: 10 },
   input: { flex: 1, fontSize: 16, color: '#1C1C1E', fontWeight: '500' },
   forgotBtn: { alignSelf: 'flex-end', marginBottom: 25 },
   forgotText: { color: '#5E5CE6', fontWeight: '600', fontSize: 13 },
-  
   primaryBtn: { backgroundColor: '#5E5CE6', borderRadius: 16, height: 55, justifyContent: 'center', alignItems: 'center', shadowColor: '#5E5CE6', shadowOpacity: 0.3, shadowRadius: 10, elevation: 4 },
   primaryBtnText: { color: '#FFFFFF', fontSize: 16, fontWeight: '800' },
-  
   dividerRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 25 },
   dividerLine: { flex: 1, height: 1, backgroundColor: '#D1D1D6' },
   dividerText: { marginHorizontal: 15, color: '#8E8E93', fontWeight: '600', fontSize: 12 },
-  
   googleBtn: { flexDirection: 'row', backgroundColor: '#FFFFFF', borderRadius: 16, height: 55, justifyContent: 'center', alignItems: 'center', marginBottom: 15, borderWidth: 1, borderColor: '#E5E5EA' },
   googleBtnText: { color: '#1C1C1E', fontSize: 15, fontWeight: '700', marginLeft: 10 },
   guestBtn: { backgroundColor: 'transparent', height: 50, justifyContent: 'center', alignItems: 'center' },
   guestBtnText: { color: '#8E8E93', fontSize: 15, fontWeight: '700' },
-  
   footerContainer: { flexDirection: 'row', justifyContent: 'center', marginBottom: 30 },
   footerText: { color: '#8E8E93', fontSize: 14 },
   footerLink: { color: '#5E5CE6', fontSize: 14, fontWeight: '800' },
-
   modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   alertCard: { backgroundColor: '#FFFFFF', borderRadius: 24, padding: 30, width: '80%', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 15, elevation: 5 },
   alertIconWrap: { width: 70, height: 70, borderRadius: 35, justifyContent: 'center', alignItems: 'center', marginBottom: 20 },

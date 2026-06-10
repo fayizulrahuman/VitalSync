@@ -164,7 +164,7 @@ export default function HomeScreen({ navigation }) {
             <View style={styles.headerLeft}>
               <Image source={getAvatarSource()} style={styles.avatar} />
               <View>
-                <Text style={styles.greetingText}>Hello, {userName}!</Text>
+                <Text style={styles.greetingText}>Hello, {userName}</Text>
                 <Text style={styles.subtitleText}>Your health, our priority.</Text>
               </View>
             </View>
@@ -306,9 +306,12 @@ const FeatureCard = ({ title, subtitle, buttonText, buttonColor = '#5E5CE6', top
       <View style={styles.cardTopRightIcon}>
         <MaterialCommunityIcons name={topIcon} size={18} color="rgba(0,0,0,0.4)" />
       </View>
-      <View style={styles.imageContainer}>
-        <Image source={imageSource} style={[styles.cardImageBase, imageStyle]} resizeMode="contain" />
+      
+      {/* 🛑 FIXED: pointerEvents="none" prevents the transparent image edges from stealing touches */}
+      <View style={styles.imageContainer} pointerEvents="none">
+        <Image source={imageSource} style={[styles.cardImageBase, imageStyle]} />
       </View>
+      
       <Text style={styles.cardTitle}>{title}</Text>
       <Text style={styles.cardSubtitle}>{subtitle}</Text>
       <View style={styles.cardButton}>
@@ -320,7 +323,7 @@ const FeatureCard = ({ title, subtitle, buttonText, buttonColor = '#5E5CE6', top
 );
 
 const QuickActionIcon = ({ icon, label, color, onPress }) => (
-  <TouchableOpacity style={styles.quickActionWrapper} onPress={onPress}>
+  <TouchableOpacity style={styles.quickActionWrapper} activeOpacity={0.9} onPress={onPress}>
     <View style={[styles.quickActionCircle, { backgroundColor: color }]}>
       <Ionicons name={icon} size={24} color="#FFFFFF" />
     </View>
@@ -356,8 +359,20 @@ const styles = StyleSheet.create({
   featureCard: { borderRadius: 24, padding: 16, height: 210, borderWidth: 1, borderColor: 'rgba(255,255,255,0.4)' },
   cardTopRightIcon: { position: 'absolute', top: 12, right: 12, width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(255,255,255,0.3)', justifyContent: 'center', alignItems: 'center' },
   
-  imageContainer: { height: 90, justifyContent: 'center', alignItems: 'center', marginVertical: 4 },
-  cardImageBase: { alignSelf: 'center' },
+  // 🛑 FIXED: Using percentages ensures the invisible hit-box NEVER bleeds out of the card!
+  imageContainer: { 
+    height: 100, // Locks the maximum height 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginVertical: -2 
+  },
+  cardImageBase: { 
+    alignSelf: 'center',
+    height: '100%', // Scales perfectly to the 90px container
+    resizeMode: 'contain'
+  },
+  
+  // Notice these are percentages now, not fixed pixels like "250"
   medicineImage: { width: 150, height: 200 },
   bloodImage: { width: 130, height: 200 },
   brainImage: { width: 175, height: 200 },

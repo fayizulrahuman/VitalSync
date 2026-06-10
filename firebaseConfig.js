@@ -1,29 +1,26 @@
-import { initializeApp, getApp, getApps } from 'firebase/app';
-import { initializeAuth, getReactNativePersistence } from 'firebase/auth';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { initializeApp } from 'firebase/app';
+import { initializeAuth, getReactNativePersistence } from 'firebase/auth'; 
+import { getFirestore } from 'firebase/firestore';
+import ReactNativeAsyncStorage from '@react-native-async-storage/async-storage';
 
-// 1. Replace with your actual Firebase project keys
+// 👇 Notice the removed quotes and added process.env 👇
 const firebaseConfig = {
-  apiKey: "AIzaSyCMmzLx_C9lp4MoEcpagjTAWna3TWV8pjQ",
-  authDomain: "vital-sync-9525e.firebaseapp.com",
-  projectId: "vital-sync-9525e",
-  storageBucket: "vital-sync-9525e.firebasestorage.app",
-  messagingSenderId: "220826507850",
-  appId: "1:220826507850:web:48597f7f58d12b401764b3"
+  apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY,
+  authDomain: process.env.EXPO_PUBLIC_AUTH_DOMAIN,
+  projectId: process.env.EXPO_PUBLIC_PROJECT_ID,
+  storageBucket: process.env.EXPO_PUBLIC_STORAGE_BUCKET,
+  messagingSenderId: process.env.EXPO_PUBLIC_MESSAGING_SENDER_ID,
+  appId: process.env.EXPO_PUBLIC_APP_ID
 };
 
+// Initialize Firebase App
+const app = initializeApp(firebaseConfig);
 
-// 2. Safely initialize the app to prevent duplicate errors
-let app;
-if (getApps().length === 0) {
-  app = initializeApp(firebaseConfig);
-} else {
-  app = getApp();
-}
-
-// 3. Initialize Auth with AsyncStorage persistence
+// 🛑 Initialize Auth with Persistence
 const auth = initializeAuth(app, {
-  persistence: getReactNativePersistence(AsyncStorage)
+  persistence: getReactNativePersistence(ReactNativeAsyncStorage)
 });
 
+// Export Auth and Database
 export { auth };
+export const db = getFirestore(app);

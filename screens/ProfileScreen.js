@@ -11,8 +11,11 @@ import * as Sharing from 'expo-sharing';
 import { useEffect, useState } from 'react';
 import { Image, Linking, Modal, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { backupDataToCloud } from '../CloudSync';
+import { auth, db } from '../firebaseConfig';
+import { deleteUser } from 'firebase/auth';
+import { doc, deleteDoc } from 'firebase/firestore';
 
-// Conditionally import native Android pedometer
 let AndroidPedometer = null;
 if (Platform.OS === 'android') {
   try {
@@ -22,7 +25,6 @@ if (Platform.OS === 'android') {
   }
 }
 
-// Configure notifications
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
     shouldShowAlert: true,
@@ -47,15 +49,15 @@ const INBUILT_AVATARS = {
 };
 
 export default function ProfileScreen({ navigation }) {
-  const [name, setName] = useState('Fayizul Rahuman');
-  const [age, setAge] = useState('21');
-  const [bloodGroup, setBloodGroup] = useState('O+');
-  const [weight, setWeight] = useState('68.5'); 
+  const [name, setName] = useState('');
+  const [age, setAge] = useState('');
+  const [bloodGroup, setBloodGroup] = useState('');
+  const [weight, setWeight] = useState(''); 
   const [healthId, setHealthId] = useState('');
   const [avatar, setAvatar] = useState({ type: 'inbuilt', gender: 'male', index: 0 });
-
-  const [hr, setHr] = useState('69');
-  const [spo2, setSpo2] = useState('97');
+  const [confirmModal, setConfirmModal] = useState({ visible: false, title: '', message: '', type: 'warning', onConfirm: null });
+  const [hr, setHr] = useState('0');
+  const [spo2, setSpo2] = useState('0');
   const [steps, setSteps] = useState(0);
 
   const [shareData, setShareData] = useState(true);
@@ -69,10 +71,8 @@ export default function ProfileScreen({ navigation }) {
   const [avatarGenderTab, setAvatarGenderTab] = useState('male');
   
   const [customAlert, setCustomAlert] = useState({ visible: false, title: '', message: '', type: 'info', onConfirm: null });
-
   const [records, setRecords] = useState([]);
 
-  // Request notification permissions on mount
   useEffect(() => {
     const requestNotifPermissions = async () => {
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
@@ -98,7 +98,6 @@ export default function ProfileScreen({ navigation }) {
     return unsubscribe;
   }, [navigation]);
 
-  // --- NATIVE STEP SYNC ---
   const syncNativeSteps = async () => {
     if (Platform.OS === 'android' && AndroidPedometer) {
       try {
@@ -110,7 +109,6 @@ export default function ProfileScreen({ navigation }) {
         console.log("Failed to read native steps for profile:", error);
       }
     } else {
-       // Fallback for Expo Go
        const storedSteps = await AsyncStorage.getItem('@vital_sync_steps_total');
        if (storedSteps) setSteps(parseInt(storedSteps));
     }
@@ -164,11 +162,7 @@ export default function ProfileScreen({ navigation }) {
   const showNotification = async (title, body) => {
     try {
       await Notifications.scheduleNotificationAsync({
-        content: {
-          title: title,
-          body: body,
-          data: { screen: "Profile" },
-        },
+        content: { title: title, body: body, data: { screen: "Profile" } },
         trigger: null,
       });
     } catch (error) {
@@ -194,12 +188,12 @@ export default function ProfileScreen({ navigation }) {
         return;
       }
       
-      const auth = await LocalAuthentication.authenticateAsync({
+      const authState = await LocalAuthentication.authenticateAsync({
         promptMessage: 'Authenticate to enable App Lock',
         fallbackLabel: 'Use Passcode',
       });
 
-      if (auth.success) {
+      if (authState.success) {
         setBiometric(true);
         await AsyncStorage.setItem('@vital_biometric_lock', 'true');
         await showNotification('App Lock Enabled', 'Biometric authentication has been enabled for VitalSync.');
@@ -219,9 +213,7 @@ export default function ProfileScreen({ navigation }) {
   };
 
   const handleRateUs = () => {
-    const storeUrl = Platform.OS === 'ios' 
-      ? 'itms-apps://itunes.apple.com/app/idYOUR_APP_ID' 
-      : 'market://details?id=com.fayiz.vitalsync';
+    const storeUrl = Platform.OS === 'ios' ? 'itms-apps://itunes.apple.com/app/idYOUR_APP_ID' : 'market://details?id=com.fayiz.vitalsync';
     openLink(storeUrl);
   };
 
@@ -233,14 +225,21 @@ export default function ProfileScreen({ navigation }) {
     await AsyncStorage.setItem('@vital_user_name', name);
     await AsyncStorage.setItem('@vital_user_age', age);
     await AsyncStorage.setItem('@vital_user_bg', bloodGroup);
+    await AsyncStorage.setItem('@vital_sync_weight', weight);
+    await AsyncStorage.setItem('@vital_sync_blood', bloodGroup);
     setIsEditProfileVisible(false);
+
+    if (auth.currentUser) backupDataToCloud(auth.currentUser.uid);
     await showNotification('Profile Updated', 'Your profile information has been saved successfully.');
   };
-
+  
   const handleAvatarSelect = async (gender, index) => {
     const newAvatar = { type: 'inbuilt', gender, index };
     setAvatar(newAvatar);
     await AsyncStorage.setItem('@vital_user_avatar', JSON.stringify(newAvatar));
+    
+    if (auth.currentUser) backupDataToCloud(auth.currentUser.uid);
+
     setIsAvatarModalVisible(false);
     await showNotification('Avatar Updated', 'Your profile picture has been changed.');
   };
@@ -256,6 +255,9 @@ export default function ProfileScreen({ navigation }) {
       const newAvatar = { type: 'uri', uri: result.assets[0].uri };
       setAvatar(newAvatar);
       await AsyncStorage.setItem('@vital_user_avatar', JSON.stringify(newAvatar));
+      
+      if (auth.currentUser) backupDataToCloud(auth.currentUser.uid);
+
       setIsAvatarModalVisible(false);
       await showNotification('Avatar Updated', 'Your profile picture has been changed.');
     }
@@ -266,14 +268,10 @@ export default function ProfileScreen({ navigation }) {
       const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true });
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const file = result.assets[0];
-        
         const fileName = file.name || `Record_${Date.now()}`;
         const permanentUri = FileSystem.documentDirectory + fileName.replace(/\s+/g, '_');
         
-        await FileSystem.copyAsync({
-          from: file.uri,
-          to: permanentUri
-        });
+        await FileSystem.copyAsync({ from: file.uri, to: permanentUri });
 
         const newRecord = {
           id: Date.now().toString(),
@@ -297,12 +295,18 @@ export default function ProfileScreen({ navigation }) {
   };
 
   const deleteRecord = (id) => {
-    showWarning('Delete Record', 'Are you sure you want to delete this record? This cannot be undone.', 'warning', async () => {
-      const updatedRecords = records.filter(r => r.id !== id);
-      setRecords(updatedRecords);
-      await AsyncStorage.setItem('@vital_medical_records', JSON.stringify(updatedRecords));
-      setCustomAlert({ visible: false });
-      await showNotification('Record Deleted', 'The medical record has been removed.');
+    setConfirmModal({
+      visible: true,
+      title: "Delete Record",
+      message: "Are you sure you want to delete this medical record? This cannot be undone.",
+      type: "error",
+      onConfirm: async () => {
+        const updatedRecords = records.filter(r => r.id !== id);
+        setRecords(updatedRecords);
+        await AsyncStorage.setItem('@vital_medical_records', JSON.stringify(updatedRecords));
+        setConfirmModal({ visible: false, title: '', message: '', type: 'warning', onConfirm: null });
+        await showNotification('Record Deleted', 'The medical record has been removed.');
+      }
     });
   };
 
@@ -311,16 +315,13 @@ export default function ProfileScreen({ navigation }) {
       showWarning('Unavailable', 'This is a sample record and cannot be opened.', 'info');
       return;
     }
-
     const uri = record.uri;
-
     try {
       const fileInfo = await FileSystem.getInfoAsync(uri);
       if (!fileInfo.exists) {
         showWarning('File Missing', 'This file was moved or deleted from your device storage.', 'error');
         return;
       }
-
       let exactMimeType = record.mimeType;
       if (!exactMimeType) {
         const lowerUri = uri.toLowerCase();
@@ -329,39 +330,60 @@ export default function ProfileScreen({ navigation }) {
         else if (lowerUri.endsWith('.png')) exactMimeType = 'image/png';
         else exactMimeType = '*/*';
       }
-
       if (Platform.OS === 'android') {
         const contentUri = await FileSystem.getContentUriAsync(uri);
-
         try {
-          await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
-            data: contentUri,
-            flags: 1,
-            type: exactMimeType,
-          });
+          await IntentLauncher.startActivityAsync('android.intent.action.VIEW', { data: contentUri, flags: 1, type: exactMimeType });
         } catch (intentErr) {
-           console.log("Intent Viewer failed:", intentErr);
            await Sharing.shareAsync(uri, { mimeType: exactMimeType });
         }
       } else {
         await Sharing.shareAsync(uri, { mimeType: exactMimeType });
       }
     } catch (e) {
-      console.log("File Open Error:", e);
       showWarning('Cannot Open File', 'No compatible app found to view this document.', 'error');
     }
   };
 
   const handleLogout = () => {
-    showWarning("Log Out", "Are you sure you want to log out of your account?", "warning", async () => {
-      setCustomAlert({ visible: false });
-      await AsyncStorage.removeItem('@vital_is_logged_in');
-      await showNotification('Logged Out', 'You have been successfully logged out.');
-      navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+    setConfirmModal({
+      visible: true,
+      title: "Log Out",
+      message: "Are you sure you want to log out of your account?",
+      type: "warning",
+      onConfirm: async () => {
+        setConfirmModal({ visible: false, title: '', message: '', type: 'warning', onConfirm: null });
+        await AsyncStorage.clear();
+        await auth.signOut();
+        navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+      }
     });
   };
 
-  // --- PDF EXPORT FUNCTION ---
+  const handleDeleteAccount = () => {
+    setConfirmModal({
+      visible: true,
+      title: "Delete Account?",
+      message: "All your vitals, contacts, and history will be wiped from our servers forever.",
+      type: "error",
+      onConfirm: async () => {
+        try {
+          const user = auth.currentUser;
+          if (user) {
+            await deleteDoc(doc(db, 'users', user.uid));
+            await deleteUser(user);
+          }
+          await AsyncStorage.clear();
+          navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
+        } catch (error) {
+          if (error.code === 'auth/requires-recent-login') {
+             showWarning("Security Verification", "Please log out, log back in, and try deleting your account again.", "warning");
+          }
+        }
+      }
+    });
+  };
+
   const exportHealthData = async () => {
     try {
       const htmlContent = `
@@ -385,7 +407,6 @@ export default function ProfileScreen({ navigation }) {
         <body>
           <h1>VitalSync Health Report</h1>
           <p style="color: #8E8E93; font-style: italic;">Exported on: ${new Date().toLocaleString()}</p>
-          
           <div class="section">
             <h2>Personal Information</h2>
             <div class="row"><span class="label">Patient Name:</span><span class="value">${name}</span></div>
@@ -393,15 +414,13 @@ export default function ProfileScreen({ navigation }) {
             <div class="row"><span class="label">Blood Group:</span><span class="value">${bloodGroup}</span></div>
             <div class="row"><span class="label">Health ID:</span><span class="value">${healthId}</span></div>
           </div>
-
           <div class="section">
             <h2>Current Vitals</h2>
             <div class="row"><span class="label">Weight:</span><span class="value">${weight} kg</span></div>
             <div class="row"><span class="label">Heart Rate (Avg):</span><span class="value">${hr} bpm</span></div>
             <div class="row"><span class="label">Blood Oxygen (SpO2):</span><span class="value">${spo2}%</span></div>
-            <div class="row"><span class="label">Daily Steps (Current):</span><span class="value">${steps.toLocaleString()} / ${stepGoal.toLocaleString()}</span></div>
+            <div class="row"><span class="label">Daily Steps:</span><span class="value">${steps.toLocaleString()} / ${stepGoal.toLocaleString()}</span></div>
           </div>
-
           <div class="section">
             <h2>Medical Records History</h2>
             ${records.length === 0 ? '<p>No records uploaded.</p>' : records.map(r => `
@@ -411,35 +430,36 @@ export default function ProfileScreen({ navigation }) {
               </div>
             `).join('')}
           </div>
-
-          <div class="footer">
-            Report securely generated by VitalSync Mobile Application.
-          </div>
+          <div class="footer">Report securely generated by VitalSync Mobile Application.</div>
         </body>
         </html>
       `;
-
-      const { uri } = await Print.printToFileAsync({
-        html: htmlContent,
-        base64: false
-      });
-
-      // Define a custom filename
+      const { uri } = await Print.printToFileAsync({ html: htmlContent, base64: false });
       const pdfName = `VitalSync_Report_${name.replace(/\s+/g, '_')}_${Date.now()}.pdf`;
       const permanentUri = FileSystem.documentDirectory + pdfName;
+      await FileSystem.copyAsync({ from: uri, to: permanentUri });
+      if (Platform.OS === 'android') {
+        try {
+          const contentUri = await FileSystem.getContentUriAsync(permanentUri);
+          await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
+            data: contentUri,
+            flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+            type: 'application/pdf',
+         });
+        } catch (intentErr) {
+          // Fallback to standard share if no PDF viewer is installed
+          await Sharing.shareAsync(permanentUri, { mimeType: 'application/pdf', dialogTitle: 'Export Health Report' });
+        }
+      } else {
+        // iOS works perfectly with the standard share sheet
+        await Sharing.shareAsync(permanentUri, { 
+          mimeType: 'application/pdf', 
+          dialogTitle: 'Export Health Report', 
+          UTI: 'com.adobe.pdf' 
+        });
+      }
       
-      await FileSystem.copyAsync({
-        from: uri,
-        to: permanentUri
-      });
-
-      await Sharing.shareAsync(permanentUri, {
-        mimeType: 'application/pdf',
-        dialogTitle: 'Export Health Report',
-        UTI: 'com.adobe.pdf'
-      });
-      
-      await showNotification('Report Exported', 'Your PDF health report is ready to share.');
+      await showNotification('Report Exported', 'Your PDF health report is ready to view.');
     } catch (error) {
       console.log('PDF Export error:', error);
       showWarning('Export Failed', 'Could not generate the PDF report.', 'error');
@@ -480,10 +500,10 @@ export default function ProfileScreen({ navigation }) {
             <Text style={styles.statLabel}>Blood Group</Text>
           </TouchableOpacity>
           <View style={styles.statDivider} />
-          <View style={styles.statBox}>
+          <TouchableOpacity style={styles.statBox} onPress={() => setIsEditProfileVisible(true)}>
             <Text style={styles.statValue}>{weight} <Text style={{fontSize: 12}}>kg</Text></Text>
             <Text style={styles.statLabel}>Weight</Text>
-          </View>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.tabContainer}>
@@ -544,7 +564,6 @@ export default function ProfileScreen({ navigation }) {
                 <Text style={{fontSize: 9, color: '#8E8E93', marginTop: 2}}>Goal: {stepGoal}</Text>
               </TouchableOpacity>
             </View>
-            
             <TouchableOpacity style={styles.exportBtn} onPress={exportHealthData}>
               <MaterialCommunityIcons name="file-pdf-box" size={20} color="#FF3B30" />
               <Text style={styles.exportBtnText}>Export Health Report</Text>
@@ -552,9 +571,13 @@ export default function ProfileScreen({ navigation }) {
           </View>
         )}
 
+        <TouchableOpacity style={styles.editProfileBtn} onPress={() => setIsEditProfileVisible(true)}>
+          <Ionicons name="pencil" size={16} color="#FFFFFF" style={{marginRight: 6}} />
+          <Text style={styles.editProfileBtnText}>Edit Profile Details</Text>
+        </TouchableOpacity>
+
         <View style={styles.menuSection}>
           <Text style={styles.menuTitle}>Settings & Preferences</Text>
-          
           <TouchableOpacity style={styles.menuItem} onPress={() => setActiveMenuModal('Personal')}>
             <View style={[styles.menuIconBg, {backgroundColor: '#F4F4FF'}]}><Ionicons name="person-outline" size={18} color="#5E5CE6"/></View>
             <Text style={styles.menuItemText}>Personal Info</Text>
@@ -567,20 +590,28 @@ export default function ProfileScreen({ navigation }) {
             <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.menuItem} onPress={() => setActiveMenuModal('Help')}>
+          <TouchableOpacity style={[styles.menuItem, {borderBottomWidth: 0}]} onPress={() => setActiveMenuModal('Help')}>
             <View style={[styles.menuIconBg, {backgroundColor: '#F0F8FF'}]}><Ionicons name="help-circle-outline" size={18} color="#32ADE6"/></View>
             <Text style={styles.menuItemText}>Help & Support</Text>
             <Ionicons name="chevron-forward" size={18} color="#C7C7CC" />
           </TouchableOpacity>
+        </View>
 
-          <TouchableOpacity style={[styles.menuItem, {borderBottomWidth: 0}]} onPress={handleLogout}>
-            <View style={[styles.menuIconBg, {backgroundColor: '#FFF5E5'}]}><Ionicons name="log-out-outline" size={18} color="#FF9500"/></View>
-            <Text style={[styles.menuItemText, {color: '#FF3B30'}]}>Log Out</Text>
+        <View style={styles.actionCardsContainer}>
+          <TouchableOpacity style={styles.actionCard} onPress={handleLogout}>
+            <View style={[styles.actionIconBg, {backgroundColor: '#FFF5E5'}]}><Ionicons name="log-out-outline" size={20} color="#FF9500"/></View>
+            <Text style={styles.actionCardTextWarning}>Log Out</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity style={[styles.actionCard, { borderColor: '#FFE5E5', borderWidth: 1 }]} onPress={handleDeleteAccount}>
+            <View style={[styles.actionIconBg, {backgroundColor: '#FFE5E5'}]}><Ionicons name="trash-outline" size={20} color="#FF3B30"/></View>
+            <Text style={styles.actionCardTextDanger}>Delete Account</Text>
           </TouchableOpacity>
         </View>
+
       </ScrollView>
 
-      {/* Custom Alert Modal */}
+      {/* Info Alert Modal */}
       <Modal visible={customAlert.visible} transparent animationType="fade">
         <View style={styles.modalOverlayCenter}>
           <View style={styles.alertCard}>
@@ -613,11 +644,37 @@ export default function ProfileScreen({ navigation }) {
         </View>
       </Modal>
 
+      {/* Custom Action Modal for Logout/Delete */}
+      <Modal visible={confirmModal.visible} transparent animationType="fade">
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.alertCard}>
+            <View style={[styles.alertIconWrap, confirmModal.type === 'error' ? {backgroundColor: '#FFE5E5'} : {backgroundColor: '#FFF5E5'}]}>
+              <Ionicons 
+                name={confirmModal.type === 'error' ? 'warning' : 'log-out'} 
+                size={36} 
+                color={confirmModal.type === 'error' ? '#FF3B30' : '#FF9500'} 
+              />
+            </View>
+            <Text style={styles.alertTitle}>{confirmModal.title}</Text>
+            <Text style={styles.alertMessage}>{confirmModal.message}</Text>
+            
+            <View style={{ flexDirection: 'row', gap: 12, width: '100%' }}>
+              <TouchableOpacity style={[styles.alertBtnOk, { backgroundColor: '#F2F2F7', flex: 1 }]} onPress={() => setConfirmModal({ visible: false, title: '', message: '', type: 'warning', onConfirm: null })}>
+                <Text style={[styles.alertBtnOkText, { color: '#8E8E93' }]}>Cancel</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity style={[styles.alertBtnOk, { flex: 1 }, confirmModal.type === 'error' ? {backgroundColor: '#FF3B30'} : {backgroundColor: '#FF9500'}]} onPress={confirmModal.onConfirm}>
+                <Text style={styles.alertBtnOkText}>{confirmModal.type === 'error' ? 'Delete' : 'Log Out'}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Dynamic Menu Cards Modal */}
       <Modal visible={activeMenuModal !== null} transparent animationType="fade">
         <View style={styles.modalOverlayCenter}>
           <View style={styles.centerMenuContent}>
-            
             <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20}}>
               <Text style={styles.modalTitle}>
                 {activeMenuModal === 'Personal' ? 'Personal Info' : 
@@ -773,6 +830,12 @@ export default function ProfileScreen({ navigation }) {
                 <TextInput style={styles.input} value={bloodGroup} onChangeText={setBloodGroup} autoCapitalize="characters" />
               </View>
             </View>
+            <View style={{flexDirection: 'row', justifyContent: 'space-between'}}>
+              <View style={{width: '100%'}}>
+                <Text style={styles.inputLabel}>Weight (kg)</Text>
+                <TextInput style={styles.input} value={weight} onChangeText={setWeight} keyboardType="decimal-pad" />
+              </View>
+            </View>
 
             <View style={styles.modalBtnRow}>
               <TouchableOpacity style={styles.modalBtnCancel} onPress={() => setIsEditProfileVisible(false)}>
@@ -785,7 +848,6 @@ export default function ProfileScreen({ navigation }) {
           </View>
         </View>
       </Modal>
-
     </SafeAreaView>
   );
 }
@@ -794,7 +856,6 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: '#F8F9FF' },
   scrollContent: { paddingHorizontal: 20, paddingTop: 20, paddingBottom: 40 },
   
-  // Header
   headerSection: { alignItems: 'center', marginBottom: 25 },
   avatarContainer: { position: 'relative', marginBottom: 15 },
   avatarImage: { width: 100, height: 100, borderRadius: 50, backgroundColor: '#E5E5EA', borderWidth: 4, borderColor: '#FFFFFF' },
@@ -803,21 +864,18 @@ const styles = StyleSheet.create({
   healthIdBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EAEBFF', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 },
   healthIdText: { color: '#5E5CE6', fontSize: 13, fontWeight: '700', marginLeft: 4, letterSpacing: 0.5 },
 
-  // Stats Row
   statsRow: { flexDirection: 'row', backgroundColor: '#FFFFFF', borderRadius: 20, paddingVertical: 15, marginBottom: 25, shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 10, elevation: 2 },
   statBox: { flex: 1, alignItems: 'center' },
   statValue: { fontSize: 18, fontWeight: '800', color: '#1C1C1E', marginBottom: 2 },
   statLabel: { fontSize: 11, color: '#8E8E93', fontWeight: '500' },
   statDivider: { width: 1, backgroundColor: '#F0F0F0', height: '80%', alignSelf: 'center' },
 
-  // Tabs
   tabContainer: { flexDirection: 'row', backgroundColor: '#EAEBFF', borderRadius: 16, padding: 4, marginBottom: 20 },
   tabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 12 },
   tabBtnActive: { backgroundColor: '#FFFFFF', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 5, elevation: 2 },
   tabText: { fontSize: 13, fontWeight: '600', color: '#8E8E93' },
   tabTextActive: { color: '#5E5CE6', fontWeight: '700' },
 
-  // Tab Content
   tabContent: { minHeight: 180, marginBottom: 25 },
   emptyState: { alignItems: 'center', paddingVertical: 40 },
   emptyStateText: { fontSize: 16, fontWeight: '600', color: '#8E8E93', marginTop: 12 },
@@ -839,14 +897,21 @@ const styles = StyleSheet.create({
   exportBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF5E5', paddingVertical: 14, borderRadius: 12, marginTop: 5 },
   exportBtnText: { color: '#FF3B30', fontSize: 14, fontWeight: '700', marginLeft: 8 },
 
-  // Menu Section
-  menuSection: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 20, shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 10, elevation: 2 },
+  editProfileBtn: { backgroundColor: '#5E5CE6', flexDirection: 'row', paddingVertical: 14, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginBottom: 20 },
+  editProfileBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 15 },
+
+  menuSection: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 20, shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 10, elevation: 2, marginBottom: 20 },
   menuTitle: { fontSize: 16, fontWeight: '800', color: '#1C1C1E', marginBottom: 15 },
   menuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
   menuIconBg: { width: 34, height: 34, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
   menuItemText: { flex: 1, fontSize: 15, fontWeight: '600', color: '#1C1C1E' },
 
-  // Modals - Custom Alerts & Cards
+  actionCardsContainer: { marginBottom: 20, gap: 15 },
+  actionCard: { backgroundColor: '#FFFFFF', padding: 18, borderRadius: 20, flexDirection: 'row', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 10, elevation: 2 },
+  actionIconBg: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
+  actionCardTextWarning: { fontSize: 16, fontWeight: '700', color: '#FF9500' },
+  actionCardTextDanger: { fontSize: 16, fontWeight: '800', color: '#FF3B30' },
+
   modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   centerMenuContent: { backgroundColor: '#FFFFFF', borderRadius: 24, padding: 25, width: '85%', shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 15, elevation: 5 },
   
@@ -860,7 +925,7 @@ const styles = StyleSheet.create({
   alertBtnOk: { flex: 1, paddingVertical: 14, borderRadius: 14, alignItems: 'center' },
   alertBtnOkText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
 
-  modalTitle: { fontSize: 20, fontWeight: '800', color: '#1C1C1E' },
+  modalTitle: { fontSize: 20, fontWeight: '800', color: '#1C1C1E', marginBottom: 15 },
   inputLabel: { fontSize: 12, color: '#8E8E93', fontWeight: '600', marginBottom: 4, marginLeft: 4 },
   input: { backgroundColor: '#F4F4FF', padding: 15, borderRadius: 12, fontSize: 16, color: '#1C1C1E', fontWeight: '600', marginBottom: 15 },
   modalBtnRow: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 10 },
@@ -869,7 +934,6 @@ const styles = StyleSheet.create({
   modalBtnSave: { flex: 1, padding: 15, alignItems: 'center', borderRadius: 12, backgroundColor: '#5E5CE6', marginLeft: 8 },
   modalBtnSaveText: { color: '#FFFFFF', fontWeight: '700' },
 
-  // Avatar Modal
   modalOverlayBottom: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
   bottomSheet: { backgroundColor: '#F8F9FF', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, paddingBottom: 50, maxHeight: '80%' },
   sheetHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
@@ -885,7 +949,6 @@ const styles = StyleSheet.create({
   avatarGridItem: { width: '30%', aspectRatio: 1, marginBottom: 15, borderRadius: 16, overflow: 'hidden' },
   avatarGridImg: { width: '100%', height: '100%' },
 
-  // Menu Modal Styling
   infoText: { fontSize: 14, color: '#8E8E93', marginBottom: 12 },
   infoVal: { color: '#1C1C1E', fontWeight: '700', fontSize: 15 },
   toggleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 12 },
@@ -895,7 +958,6 @@ const styles = StyleSheet.create({
   helpRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F4F4FF', padding: 16, borderRadius: 16, marginBottom: 12 },
   helpText: { fontSize: 16, fontWeight: '600', color: '#1C1C1E', marginLeft: 15 },
 
-  // Connect With Me Styling
   connectRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 16, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
   connectIconBg: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
   connectText: { flex: 1, fontSize: 16, color: '#1C1C1E', fontWeight: '500' },

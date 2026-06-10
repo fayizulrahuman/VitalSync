@@ -1,19 +1,48 @@
-import React, { useState, useContext } from 'react';
+import React, { useState, useContext, useEffect } from 'react';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Switch, Vibration } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { MedicineContext } from '../context/MedicineContext';
+import * as Notifications from 'expo-notifications';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function MedicineDetailsScreen({ route, navigation }) {
   const { medicines, markAsTaken, deleteMedicine, showAlert } = useContext(MedicineContext);
   
   const pillId = route.params?.pillId;
-  const timeId = route.params?.timeId; // Receives the specific time slot
+  const timeId = route.params?.timeId;
 
   const pillData = medicines.find(m => m.id === pillId);
   const timeSlot = pillData?.times.find(t => t.id === timeId) || pillData?.times[0];
 
-  const [isReminderOn, setIsReminderOn] = useState(true);
+  // 1. Dedicated State for the Toggle and Notification ID
+  const [isReminderOn, setIsReminderOn] = useState(false);
+  const [notificationId, setNotificationId] = useState(null);
+
+  useEffect(() => {
+    // 2. Load the actual saved state for THIS specific pill and time
+    const loadReminderState = async () => {
+      if (!pillData || !timeSlot) return;
+      
+      const storageKey = `@reminder_state_${pillData.id}_${timeSlot.id}`;
+      const idKey = `@reminder_id_${pillData.id}_${timeSlot.id}`;
+      
+      const savedState = await AsyncStorage.getItem(storageKey);
+      const savedId = await AsyncStorage.getItem(idKey);
+      
+      if (savedState !== null) {
+        setIsReminderOn(JSON.parse(savedState));
+      } else {
+        // Default to ON if never set
+        setIsReminderOn(true); 
+      }
+      
+      if (savedId) {
+        setNotificationId(savedId);
+      }
+    };
+    loadReminderState();
+  }, [pillData, timeSlot]);
 
   if (!pillData || !timeSlot) {
     return <View style={styles.safeArea}><Text style={{textAlign: 'center', marginTop: 50}}>Pill not found</Text></View>;
@@ -35,12 +64,69 @@ export default function MedicineDetailsScreen({ route, navigation }) {
 
   const handleTake = () => markAsTaken(pillData.id, timeSlot.id);
 
-  const scheduleNotification = () => {
-    showAlert("Reminder Set", `We'll remind you at ${timeSlot.time}`, "success");
-    setTimeout(() => {
-      Vibration.vibrate([0, 500, 200, 500]); 
-      showAlert("💊 Time for your medicine!", `Please take your ${pillData.dosage} of ${pillData.medName}.`, "warning");
-    }, 2000);
+  // 3. The actual scheduling function that calculates the precise time
+  const scheduleMedicineNotification = async (medName, timeString) => {
+    try {
+      const now = new Date();
+      const targetTime = new Date();
+      
+      const [timeStr, period] = timeString.split(' ');
+      let [hours, minutes] = timeStr.split(':').map(Number);
+      
+      if (period === 'PM' && hours < 12) hours += 12;
+      if (period === 'AM' && hours === 12) hours = 0;
+      
+      targetTime.setHours(hours, minutes, 0, 0); 
+      
+      if (targetTime <= now) {
+        targetTime.setDate(targetTime.getDate() + 1);
+      }
+      
+      const id = await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "💊 Time for Medication",
+          body: `Please take your ${pillData.dosage} of ${medName}.`,
+          sound: true,
+        },
+        trigger: {
+          date: targetTime,
+          channelId: 'medicine-reminders', // Ensure this channel is created in App.js
+        },
+      });
+      
+      return id;
+    } catch (error) {
+      console.error("Failed to schedule notification:", error);
+      return null;
+    }
+  };
+
+  // 4. The dedicated Toggle Handler
+  const handleToggleChange = async (newValue) => {
+    setIsReminderOn(newValue); 
+    
+    const storageKey = `@reminder_state_${pillData.id}_${timeSlot.id}`;
+    const idKey = `@reminder_id_${pillData.id}_${timeSlot.id}`;
+    
+    await AsyncStorage.setItem(storageKey, JSON.stringify(newValue));
+
+    if (newValue === true) {
+      // User turned it ON
+      const newId = await scheduleMedicineNotification(pillData.medName, timeSlot.time);
+      if (newId) {
+        setNotificationId(newId);
+        await AsyncStorage.setItem(idKey, newId);
+        showAlert("Reminder Set", `We'll remind you at ${timeSlot.time}`, "success");
+      }
+    } else {
+      // User turned it OFF
+      if (notificationId) {
+        await Notifications.cancelScheduledNotificationAsync(notificationId);
+        setNotificationId(null);
+        await AsyncStorage.removeItem(idKey);
+      }
+      // No alert shown when turning off for a cleaner UX
+    }
   };
 
   const renderHistory = () => {
@@ -131,11 +217,12 @@ export default function MedicineDetailsScreen({ route, navigation }) {
           <View style={styles.toggleRow}>
             <View style={{flexDirection: 'row', alignItems: 'center'}}>
               <Ionicons name="time-outline" size={18} color="#1C1C1E" style={{marginRight: 8}} />
-              <Text style={styles.toggleLabel}>Daily Notifications On</Text>
+              <Text style={styles.toggleLabel}>Daily Notifications {isReminderOn ? 'On' : 'Off'}</Text>
             </View>
+            {/* 5. Attach the new handler to the switch */}
             <Switch 
               value={isReminderOn} 
-              onValueChange={(val) => { setIsReminderOn(val); if(val) scheduleNotification(); }}
+              onValueChange={handleToggleChange}
               trackColor={{ false: '#E5E5EA', true: '#5E5CE6' }}
               thumbColor={'#FFFFFF'}
             />

@@ -1,16 +1,24 @@
 {
   "expo": {
-    "name": "Vital Sync",
+    "name": "VitalSync",
     "slug": "VitalSync",
+    "scheme": "vitalsync", 
     "version": "1.0.0",
-    "scheme": "vitalsync",
     "runtimeVersion": {
       "policy": "appVersion"
     },
     "orientation": "portrait",
-    "icon": "./assets/logo.png",
+    "icon": "./assets/APPICON.png",
     "userInterfaceStyle": "light",
     "backgroundColor": "#F8F9FF",
+
+    "splash": {
+      "image": "./assets/APPICON.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#FFFFFF",
+      "darkModeBackgroundColor": "#FFFFFF"
+    },
+
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.fayizulrahuman.VitalSync",
@@ -25,8 +33,8 @@
       "package": "com.fayizulrahuman.VitalSync",
       "googleServicesFile": "./google-services.json",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/mainicon.jpeg",
-        "backgroundColor": "#5E5CE6"
+        "foregroundImage": "./assets/APPICON.png",
+        "backgroundColor": "#FFFFFF"
       },
       "permissions": [
         "android.permission.ACTIVITY_RECOGNITION",
@@ -44,6 +52,18 @@
             "minSdkVersion": 26,
             "targetSdkVersion": 34
           }
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#FFFFFF",
+          "image": "./assets/APPICON.png",
+          "dark": {
+            "backgroundColor": "#FFFFFF",
+            "image": "./assets/APPICON.png"
+          },
+          "imageWidth": 200
         }
       ],
       "expo-asset",

@@ -5,7 +5,8 @@ import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Speech from 'expo-speech';
 import { MedicineContext } from '../context/MedicineContext';
-
+import { backupDataToCloud } from '../CloudSync';
+import { auth } from '../firebaseConfig';
 // --- EXPANDED SYMPTOM DATABASE (6 questions) ---
 const SYMPTOMS_DATA = [
   {
@@ -277,12 +278,16 @@ export default function RuralHealthAssistantScreen({ navigation }) {
     Linking.openURL('tel:108');
   };
 
-  const handleSync = () => {
+  const handleSync = async () => {
     setIsSyncing(true);
-    setTimeout(() => {
-      setIsSyncing(false);
+    // 🛑 FIXED: Actually call the real cloud backup!
+    if (auth.currentUser) {
+      await backupDataToCloud(auth.currentUser.uid);
       showAlert("Synced", "Your offline data has been securely backed up.", "success");
-    }, 1500);
+    } else {
+      showAlert("Error", "You must be logged in to sync data.", "error");
+    }
+    setIsSyncing(false);
   };
 
   return (
