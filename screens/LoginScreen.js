@@ -6,15 +6,15 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as WebBrowser from 'expo-web-browser';
 import { GoogleAuthProvider, sendPasswordResetEmail, signInWithCredential, signInWithEmailAndPassword } from 'firebase/auth';
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Image, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { auth } from '../firebaseConfig';
 
 WebBrowser.maybeCompleteAuthSession();
 
-// 🛑 IMPORTANT: Replace these with your actual keys from Google Cloud Console
-const WEB_CLIENT_ID = '182625049503-6t62o5j3f2dp8ng9os0uekgtkj0vclbu.apps.googleusercontent.com';
-const ANDROID_CLIENT_ID = 'YOUR_ANDROID_CLIENT_ID.apps.googleusercontent.com';
+// 🛑 IMPORTANT: Ensure these are your actual keys from Google Cloud Console
+const WEB_CLIENT_ID = '220826507850-gt2c3ffm6as04m5kbhm4733qc21kohhj.apps.googleusercontent.com';
+const ANDROID_CLIENT_ID = '182625049503-uhv60ok3177cgi7bjs4ksvj0pu6mtfek.apps.googleusercontent.com';
 
 export default function LoginScreen({ navigation }) {
   const [email, setEmail] = useState('');
@@ -29,11 +29,15 @@ export default function LoginScreen({ navigation }) {
     setCustomAlert({ visible: true, title, message, type });
   };
 
-  // --- Google Auth Setup ---
+  // --- Corrected Google Auth Setup ---
   const [request, response, promptAsync] = Google.useIdTokenAuthRequest({
-    clientId: WEB_CLIENT_ID,
-    androidClientId: ANDROID_CLIENT_ID,
-    redirectUri: makeRedirectUri({ scheme: 'vitalsync' }),
+    clientId: WEB_CLIENT_ID, // Required for Firebase
+    androidClientId: ANDROID_CLIENT_ID, // Required for the Standalone APK
+    redirectUri: makeRedirectUri({
+      scheme: 'vitalsync',
+      useProxy: false,
+      native: 'vitalsync://' // Forces the exact Android scheme
+    }),
   });
 
   useEffect(() => {
@@ -50,17 +54,19 @@ export default function LoginScreen({ navigation }) {
     }
   }, [response]);
 
-  const handleGoogleLogin = () => {
-    // Safety check to prevent the Error 400 crash!
-    if (WEB_CLIENT_ID.includes('YOUR_WEB_CLIENT_ID')) {
-      showWarning(
-        "Configuration Missing", 
-        "Please replace the placeholder Client IDs in LoginScreen.js with your actual Google Cloud IDs to enable Google Sign-In.", 
-        "warning"
-      );
+  const handleGoogleLogin = async () => {
+    // Safety check: Ensure the auth request has finished initializing
+    if (!request) {
+      showWarning("Please Wait", "Authentication service is still loading.", "info");
       return;
     }
-    promptAsync();
+    
+    // Trigger the native prompt
+    try {
+      await promptAsync();
+    } catch (error) {
+      showWarning("Login Error", "Failed to open Google Sign-in. Please try again.", "error");
+    }
   };
 
   const handleEmailLogin = async () => {
@@ -110,9 +116,10 @@ export default function LoginScreen({ navigation }) {
       
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.headerContainer}>
-          <View style={styles.logoBox}>
-            <Ionicons name="pulse" size={40} color="#5E5CE6" />
-          </View>
+          <Image 
+            source={require('../assets/icon-Photoroom.png')} 
+            style={styles.logoImage} 
+          />
           <Text style={styles.title}>Welcome Back</Text>
           <Text style={styles.subtitle}>Sign in to access your health dashboard.</Text>
         </View>
@@ -193,7 +200,9 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   safeArea: { flex: 1, paddingHorizontal: 25, justifyContent: 'space-between' },
   headerContainer: { marginTop: 60, alignItems: 'center' },
-  logoBox: { width: 70, height: 70, backgroundColor: '#FFFFFF', borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 20, shadowColor: '#5E5CE6', shadowOpacity: 0.2, shadowRadius: 15, elevation: 5 },
+  
+  logoImage: { width: 140, height: 140, resizeMode: 'contain', alignSelf: 'center', marginBottom: 20 },
+  
   title: { fontSize: 28, fontWeight: '800', color: '#1C1C1E', marginBottom: 8 },
   subtitle: { fontSize: 15, color: '#8E8E93' },
   

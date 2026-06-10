@@ -1,5 +1,5 @@
 import React, { useContext, useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import { ActivityIndicator, Alert, AppState, Linking, Image, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Svg, { Circle } from 'react-native-svg';
@@ -72,7 +72,7 @@ export default function RemindersScreen({ navigation }) {
                 <Text style={styles.heroDosage}>{nextDose.dosage} ({nextDose.timeSlot.label})</Text>
               </View>
               <View style={styles.heroImagePlaceholder}>
-                 <Text style={{color: '#8E8E93', fontSize: 10, textAlign: 'center'}}>3D Asset</Text>
+                <Image source={require('../assets/2.png')} style={styles.heroImage} />
               </View>
             </View>
             <View style={styles.heroBannerCard}>
@@ -119,7 +119,7 @@ export default function RemindersScreen({ navigation }) {
           <View style={styles.refillTextContainer}>
             <Text style={styles.refillTitle}>Refill Reminder</Text>
             <Text style={styles.refillSub}>{lowStockMedicines.length} medicines are running low</Text>
-            <TouchableOpacity style={styles.orderNowBtn} onPress={() => showAlert("Pharmacy", "Connecting to nearest pharmacy...", "info")}>
+            <TouchableOpacity style={styles.orderNowBtn} onPress={() => Linking.openURL('https://www.apollopharmacy.in/?srsltid=AfmBOorn6tATQ6ZEDi19x8VdBVUHUJrnEz4S_wr_35MexISTxx-YtqVw')}>
               <Text style={styles.orderNowText}>Order Now</Text>
               <Ionicons name="chevron-forward" size={14} color="#5E5CE6" />
             </TouchableOpacity>
@@ -251,6 +251,7 @@ const styles = StyleSheet.create({
   headerTitleContainer: { alignItems: 'center' },
   headerTitle: { fontSize: 20, fontWeight: '800', color: '#1C1C1E', marginBottom: 2 },
   headerSubtitle: { fontSize: 13, color: '#8E8E93' },
+  heroImage: { width: 150, height: 110, borderRadius: 24, shadowColor: '#db1919', shadowOpacity: 0.1, shadowRadius: 8, elevation: 2 },
   heroCard: { backgroundColor: '#FFFFFF', borderRadius: 28, padding: 20, marginBottom: 30, shadowColor: '#5E5CE6', shadowOpacity: 0.08, shadowRadius: 20, shadowOffset: { width: 0, height: 10 }, elevation: 6, borderWidth: 1, borderColor: '#FFFFFF' },
   heroTopRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 20 },
   heroLeft: { flex: 1 },
@@ -261,7 +262,6 @@ const styles = StyleSheet.create({
   heroSubtitle: { fontSize: 14, color: '#8E8E93', textAlign: 'center' },
   heroMedName: { fontSize: 16, fontWeight: '700', color: '#1C1C1E', marginBottom: 2 },
   heroDosage: { fontSize: 14, color: '#8E8E93', fontWeight: '500' },
-  heroImagePlaceholder: { width: 110, height: 110, backgroundColor: '#F4F7FF', borderRadius: 24, justifyContent: 'center', alignItems: 'center' },
   heroBannerCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F4F7FF', paddingVertical: 14, paddingHorizontal: 16, borderRadius: 16 },
   heroBannerIconWrap: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', marginRight: 10, shadowColor: '#5E5CE6', shadowOpacity: 0.1, shadowRadius: 4, elevation: 2 },
   heroBannerText: { fontSize: 13, fontWeight: '700', color: '#5E5CE6' },

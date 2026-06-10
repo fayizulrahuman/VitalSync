@@ -164,7 +164,7 @@ export default function HomeScreen({ navigation }) {
             <View style={styles.headerLeft}>
               <Image source={getAvatarSource()} style={styles.avatar} />
               <View>
-                <Text style={styles.greetingText}>Good Morning, {userName}! 👋</Text>
+                <Text style={styles.greetingText}>Hello, {userName}!</Text>
                 <Text style={styles.subtitleText}>Your health, our priority.</Text>
               </View>
             </View>

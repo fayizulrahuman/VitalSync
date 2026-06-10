@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "ignoreDeprecations": "6.0",
+    "paths": {
+      "*": ["*"]
+    }
+  },
+  "exclude": [
+    "node_modules",
+    "dist",
+    ".expo"
+  ]
+}

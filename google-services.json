@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "220826507850",
+    "project_id": "vital-sync-9525e",
+    "storage_bucket": "vital-sync-9525e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:220826507850:android:363b96c26b9505691764b3",
+        "android_client_info": {
+          "package_name": "com.fayizulrahuman.VitalSync"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "220826507850-gt2c3ffm6as04m5kbhm4733qc21kohhj.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAIJtzM7_5txqTaVdeieAvj2UhMuo9XJ0E"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "220826507850-gt2c3ffm6as04m5kbhm4733qc21kohhj.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

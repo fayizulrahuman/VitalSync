@@ -1,40 +1,55 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { 
-  View, Text, StyleSheet, TouchableOpacity, Modal, 
-  TextInput, ScrollView, ActivityIndicator, Alert, 
-  Platform, AppState 
+import {
+  View, Text, StyleSheet, TouchableOpacity, Modal,
+  TextInput, ScrollView, ActivityIndicator, Alert,
+  Platform, AppState, Linking
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import Svg, { Rect, Line, Text as SvgText } from 'react-native-svg';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
+import * as TaskManager from 'expo-task-manager';
+
+// Import pedometer modules
 import { Pedometer } from 'expo-sensors';
 
-// Conditionally import platform-specific modules
+// Conditionally import Android pedometer (only for development build)
 let AndroidPedometer = null;
 if (Platform.OS === 'android') {
   try {
     AndroidPedometer = require('expo-android-pedometer');
   } catch (e) {
-    console.log('expo-android-pedometer not installed');
+    console.log('expo-android-pedometer not available in Expo Go');
   }
 }
+
+// Configure notification handler
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowBanner: true,
+    shouldShowList: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
 
 export default function StepsScreen({ navigation, route }) {
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [dailySteps, setDailySteps] = useState(0);
   const [chartData, setChartData] = useState([0, 0, 0, 0, 0, 0, 0]);
   const [isLoading, setIsLoading] = useState(false);
-  
+
   const [goal, setGoal] = useState(8000);
   const [isGoalModalVisible, setGoalModalVisible] = useState(false);
   const [newGoal, setNewGoal] = useState(goal.toString());
-  
+
   const [isBackgroundActive, setIsBackgroundActive] = useState(false);
   const [permissionStatus, setPermissionStatus] = useState('checking');
 
   const pedometerSubscription = useRef(null);
   const appState = useRef(AppState.currentState);
+  let lastStepTime = useRef(0);
 
   const formatDateKey = (dateObj) => {
     const year = dateObj.getFullYear();
@@ -42,6 +57,25 @@ export default function StepsScreen({ navigation, route }) {
     const day = String(dateObj.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   };
+
+  // Request notification permissions on mount
+  useEffect(() => {
+    const requestNotificationPermissions = async () => {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      
+      if (finalStatus !== 'granted') {
+        console.log('Notification permissions not granted');
+      }
+    };
+    
+    requestNotificationPermissions();
+  }, []);
 
   // Load saved goal
   useEffect(() => {
@@ -55,19 +89,16 @@ export default function StepsScreen({ navigation, route }) {
     loadGoal();
   }, []);
 
-  // Initialize background step counting for development build
+  // Initialize background tracking for development build
   useEffect(() => {
     const initBackgroundTracking = async () => {
       if (Platform.OS === 'android' && AndroidPedometer) {
         await setupAndroidBackgroundTracking();
-      } else if (Platform.OS === 'ios') {
-        await setupIOSBackgroundTracking();
       }
     };
     
     initBackgroundTracking();
 
-    // Handle app state changes
     const subscription = AppState.addEventListener('change', handleAppStateChange);
     
     return () => {
@@ -76,58 +107,14 @@ export default function StepsScreen({ navigation, route }) {
     };
   }, []);
 
-  // Load steps when date changes
-  useEffect(() => {
-    const loadStepsForSelectedDate = async () => {
-      setIsLoading(true);
-      const dateKey = formatDateKey(selectedDate);
-      const todayKey = formatDateKey(new Date());
-
-      try {
-        // First try to get steps from AsyncStorage
-        let savedSteps = await AsyncStorage.getItem(`@vital_steps_${dateKey}`);
-        let parsedSteps = savedSteps ? parseInt(savedSteps) : 0;
-        
-        // For today, also check native pedometer for most accurate count
-        if (dateKey === todayKey && Platform.OS === 'android' && AndroidPedometer) {
-          try {
-            const nativeSteps = await AndroidPedometer.getStepsCountAsync();
-            if (nativeSteps > parsedSteps) {
-              parsedSteps = nativeSteps;
-              await AsyncStorage.setItem(`@vital_steps_${dateKey}`, parsedSteps.toString());
-            }
-          } catch (e) {
-            console.log('Could not get native steps:', e);
-          }
-        }
-        
-        setDailySteps(parsedSteps);
-        generateDynamicChart(parsedSteps);
-
-        // Only start live tracking for today's view
-        if (dateKey === todayKey) {
-          startLiveStepTracking(parsedSteps);
-        } else {
-          stopLiveStepTracking();
-        }
-      } catch (error) {
-        console.log("Storage error:", error);
-      }
-      setIsLoading(false);
-    };
-
-    loadStepsForSelectedDate();
-  }, [selectedDate]);
-
   const setupAndroidBackgroundTracking = async () => {
     try {
-      // Initialize the pedometer module
+      // Initialize pedometer module
       const initialized = await AndroidPedometer.initialize();
       console.log('Pedometer initialized:', initialized);
 
-      // Check and request permissions
+      // Check activity recognition permission
       const activityPerm = await AndroidPedometer.getActivityPermissionStatus();
-      const notifPerm = await AndroidPedometer.getNotificationPermissionStatus();
       
       if (!activityPerm.granted) {
         const permResponse = await AndroidPedometer.requestPermissions();
@@ -135,14 +122,22 @@ export default function StepsScreen({ navigation, route }) {
           setPermissionStatus('denied');
           Alert.alert(
             'Permission Required',
-            'Step counting needs activity recognition permission to work in background.'
+            'Step counting needs activity recognition permission to work in background.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Open Settings', onPress: () => Linking.openSettings() }
+            ]
           );
           return;
         }
       }
 
-      if (!notifPerm.granted && Platform.Version >= 33) {
-        await AndroidPedometer.requestNotificationPermissions();
+      // Request notification permission for Android 13+
+      if (Platform.Version >= 33) {
+        const notifPerm = await AndroidPedometer.getNotificationPermissionStatus();
+        if (!notifPerm.granted) {
+          await AndroidPedometer.requestNotificationPermissions();
+        }
       }
 
       setPermissionStatus('granted');
@@ -150,19 +145,22 @@ export default function StepsScreen({ navigation, route }) {
       // Setup background updates with persistent notification
       await AndroidPedometer.setupBackgroundUpdates({
         title: "Step Counter Active",
-        contentTemplate: "Today's steps: %d",
+        contentTemplate: "You've taken %d steps today",
         style: "bigText",
       });
 
       setIsBackgroundActive(true);
 
-      // Subscribe to real-time updates (works in foreground and background)
+      // Show initial notification
+      await showStepNotification(dailySteps);
+
+      // Subscribe to real-time updates
       const unsubscribe = AndroidPedometer.subscribeToChange(async (event) => {
         const todayKey = formatDateKey(new Date());
         await AsyncStorage.setItem(`@vital_steps_${todayKey}`, event.steps.toString());
         await AsyncStorage.setItem('@vital_sync_steps_total', event.steps.toString());
         
-        // Update UI if we're on today's view
+        // Update UI if on today's view
         const currentViewKey = formatDateKey(selectedDate);
         if (currentViewKey === todayKey) {
           setDailySteps(event.steps);
@@ -170,49 +168,27 @@ export default function StepsScreen({ navigation, route }) {
         }
       });
 
-      // Store for cleanup
       global.__pedometerUnsubscribe = unsubscribe;
 
     } catch (error) {
       console.error('Android pedometer setup failed:', error);
       setPermissionStatus('error');
-      // Fall back to accelerometer method
-      startAccelerometerFallback();
     }
   };
 
-  const setupIOSBackgroundTracking = async () => {
+  const showStepNotification = async (steps) => {
     try {
-      const { status } = await Pedometer.requestPermissionsAsync();
-      if (status !== 'granted') {
-        setPermissionStatus('denied');
-        return;
-      }
-      setPermissionStatus('granted');
-      
-      // iOS uses periodic fetching via background tasks
-      // Steps are already tracked by HealthKit/CoreMotion
-      // We just need to sync when app becomes active
-      
-      // Get today's steps from pedometer
-      const end = new Date();
-      const start = new Date();
-      start.setHours(0, 0, 0, 0);
-      const result = await Pedometer.getStepCountAsync(start, end);
-      if (result && result.steps) {
-        const todayKey = formatDateKey(new Date());
-        await AsyncStorage.setItem(`@vital_steps_${todayKey}`, result.steps.toString());
-        const currentViewKey = formatDateKey(selectedDate);
-        if (currentViewKey === todayKey) {
-          setDailySteps(result.steps);
-          generateDynamicChart(result.steps);
-        }
-      }
-      
-      setIsBackgroundActive(true);
+      const percentage = Math.round((steps / goal) * 100);
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: "Step Update",
+          body: `You've taken ${steps.toLocaleString()} steps today (${percentage}% of your goal)!`,
+          data: { screen: "Steps" },
+        },
+        trigger: null, // Show immediately
+      });
     } catch (error) {
-      console.error('iOS pedometer setup failed:', error);
-      startAccelerometerFallback();
+      console.log('Notification error:', error);
     }
   };
 
@@ -221,7 +197,7 @@ export default function StepsScreen({ navigation, route }) {
     
     const todayKey = formatDateKey(new Date());
     
-    // If we have native background tracking active, don't start duplicate tracking
+    // If background tracking is active, don't duplicate
     if (isBackgroundActive && Platform.OS === 'android' && AndroidPedometer) {
       console.log('Background tracking already active');
       return;
@@ -231,13 +207,11 @@ export default function StepsScreen({ navigation, route }) {
       const { status } = await Pedometer.requestPermissionsAsync();
       
       if (status === 'granted') {
-        // Use official Pedometer for foreground tracking
         pedometerSubscription.current = Pedometer.watchStepCount(result => {
           const totalStepsNow = initialStepsForToday + result.steps;
           updateUIAndStorage(totalStepsNow, todayKey);
         });
       } else {
-        // Fallback to accelerometer for devices without step counter
         startAccelerometerFallback(initialStepsForToday);
       }
     } catch (error) {
@@ -247,17 +221,14 @@ export default function StepsScreen({ navigation, route }) {
   };
 
   const startAccelerometerFallback = (initialSteps = 0) => {
-    // This is the fallback method you already had
-    // Import Accelerometer dynamically to avoid issues
     const { Accelerometer } = require('expo-sensors');
-    let lastStepTime = useRef(0);
     let currentSteps = initialSteps;
     const todayKey = formatDateKey(new Date());
     
     Accelerometer.setUpdateInterval(150);
     pedometerSubscription.current = Accelerometer.addListener(accelerometerData => {
       const { x, y, z } = accelerometerData;
-      const magnitude = Math.sqrt(x * x + y * y + z * z);
+      const magnitude = Math.sqrt(x * x + y *y + z * z);
       
       if (magnitude > 1.2) {
         const now = Date.now();
@@ -284,14 +255,13 @@ export default function StepsScreen({ navigation, route }) {
     }
   };
 
-  const handleAppStateChange = (nextAppState) => {
+  const handleAppStateChange = async (nextAppState) => {
     if (nextAppState === 'active') {
-      // App came to foreground - refresh steps
       const todayKey = formatDateKey(new Date());
       const selectedKey = formatDateKey(selectedDate);
       
       if (selectedKey === todayKey) {
-        refreshTodaySteps();
+        await refreshTodaySteps();
       }
     }
     appState.current = nextAppState;
@@ -309,22 +279,48 @@ export default function StepsScreen({ navigation, route }) {
       } catch (e) {
         console.log('Refresh failed:', e);
       }
-    } else if (Platform.OS === 'ios') {
-      try {
-        const end = new Date();
-        const start = new Date();
-        start.setHours(0, 0, 0, 0);
-        const result = await Pedometer.getStepCountAsync(start, end);
-        if (result && result.steps) {
-          setDailySteps(result.steps);
-          generateDynamicChart(result.steps);
-          await AsyncStorage.setItem(`@vital_steps_${todayKey}`, result.steps.toString());
-        }
-      } catch (e) {
-        console.log('Refresh failed:', e);
-      }
     }
   };
+
+  const loadStepsForSelectedDate = async () => {
+    setIsLoading(true);
+    const dateKey = formatDateKey(selectedDate);
+    const todayKey = formatDateKey(new Date());
+
+    try {
+      let savedSteps = await AsyncStorage.getItem(`@vital_steps_${dateKey}`);
+      let parsedSteps = savedSteps ? parseInt(savedSteps) : 0;
+      
+      if (dateKey === todayKey && Platform.OS === 'android' && AndroidPedometer) {
+        try {
+          const nativeSteps = await AndroidPedometer.getStepsCountAsync();
+          if (nativeSteps > parsedSteps) {
+            parsedSteps = nativeSteps;
+            await AsyncStorage.setItem(`@vital_steps_${dateKey}`, parsedSteps.toString());
+          }
+        } catch (e) {
+          console.log('Could not get native steps:', e);
+        }
+      }
+      
+      setDailySteps(parsedSteps);
+      generateDynamicChart(parsedSteps);
+
+      if (dateKey === todayKey) {
+        startLiveStepTracking(parsedSteps);
+      } else {
+        stopLiveStepTracking();
+      }
+    } catch (error) {
+      console.log("Storage error:", error);
+    }
+    setIsLoading(false);
+  };
+
+  useEffect(() => {
+    loadStepsForSelectedDate();
+    return () => stopLiveStepTracking();
+  }, [selectedDate]);
 
   const generateDynamicChart = (totalSteps) => {
     if (totalSteps === 0) {
@@ -368,6 +364,11 @@ export default function StepsScreen({ navigation, route }) {
     setGoalModalVisible(false);
   };
 
+  const sendTestNotification = async () => {
+    await showStepNotification(dailySteps);
+    Alert.alert('Notification Sent', 'Check your notification shade!');
+  };
+
   const chartHeight = 150;
   const maxBarValue = Math.max(...chartData, 100);
   const yAxisMid = Math.floor(maxBarValue / 2);
@@ -381,7 +382,9 @@ export default function StepsScreen({ navigation, route }) {
           <Ionicons name="chevron-back" size={24} color="#1C1C1E" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Steps</Text>
-        <View style={{ width: 44 }} />
+        <TouchableOpacity onPress={sendTestNotification} style={styles.notifBtn}>
+          <Ionicons name="notifications-outline" size={22} color="#34C759" />
+        </TouchableOpacity>
       </View>
 
       {/* Background tracking indicator */}
@@ -511,6 +514,7 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 10, paddingBottom: 10 },
   backBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, elevation: 3},
   headerTitle: { fontSize: 20, fontWeight: '800', color: '#1C1C1E' },
+  notifBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 8, elevation: 3},
   bgIndicator: { 
     flexDirection: 'row', 
     alignItems: 'center', 

@@ -5,10 +5,31 @@ import * as FileSystem from 'expo-file-system/legacy';
 import * as ImagePicker from 'expo-image-picker';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as LocalAuthentication from 'expo-local-authentication';
-import * as Sharing from 'expo-sharing'; // <-- NEW IMPORT HERE
+import * as Notifications from 'expo-notifications';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { useEffect, useState } from 'react';
 import { Image, Linking, Modal, Platform, ScrollView, StyleSheet, Switch, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+
+// Conditionally import native Android pedometer
+let AndroidPedometer = null;
+if (Platform.OS === 'android') {
+  try {
+    AndroidPedometer = require('expo-android-pedometer');
+  } catch (e) {
+    console.log('Native pedometer not available in Expo Go');
+  }
+}
+
+// Configure notifications
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
 
 const INBUILT_AVATARS = {
   male: [
@@ -35,10 +56,11 @@ export default function ProfileScreen({ navigation }) {
 
   const [hr, setHr] = useState('69');
   const [spo2, setSpo2] = useState('97');
-  const [steps, setSteps] = useState('55');
+  const [steps, setSteps] = useState(0);
 
   const [shareData, setShareData] = useState(true);
   const [biometric, setBiometric] = useState(false);
+  const [stepGoal, setStepGoal] = useState(8000);
 
   const [activeTab, setActiveTab] = useState('records'); 
   const [activeMenuModal, setActiveMenuModal] = useState(null); 
@@ -50,13 +72,49 @@ export default function ProfileScreen({ navigation }) {
 
   const [records, setRecords] = useState([]);
 
+  // Request notification permissions on mount
+  useEffect(() => {
+    const requestNotifPermissions = async () => {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      let finalStatus = existingStatus;
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+      if (finalStatus !== 'granted') {
+        console.log('Notification permissions not granted');
+      }
+    };
+    requestNotifPermissions();
+  }, []);
+
   useEffect(() => {
     const unsubscribe = navigation.addListener('focus', () => {
       loadProfileData();
+      syncNativeSteps();
     });
     loadProfileData();
+    syncNativeSteps();
     return unsubscribe;
   }, [navigation]);
+
+  // --- NATIVE STEP SYNC ---
+  const syncNativeSteps = async () => {
+    if (Platform.OS === 'android' && AndroidPedometer) {
+      try {
+        const nativeSteps = await AndroidPedometer.getStepsCountAsync();
+        const storedSteps = await AsyncStorage.getItem('@vital_sync_steps_total');
+        const finalSteps = Math.max(parseInt(storedSteps || 0), nativeSteps);
+        setSteps(finalSteps);
+      } catch (error) {
+        console.log("Failed to read native steps for profile:", error);
+      }
+    } else {
+       // Fallback for Expo Go
+       const storedSteps = await AsyncStorage.getItem('@vital_sync_steps_total');
+       if (storedSteps) setSteps(parseInt(storedSteps));
+    }
+  };
 
   const loadProfileData = async () => {
     try {
@@ -75,12 +133,14 @@ export default function ProfileScreen({ navigation }) {
       
       const savedShare = await AsyncStorage.getItem('@vital_share_data');
       const savedBio = await AsyncStorage.getItem('@vital_biometric_lock');
+      const savedStepGoal = await AsyncStorage.getItem('@vital_sync_step_goal');
       
       if (savedName) setName(savedName);
       if (savedAge) setAge(savedAge);
       if (savedBg) setBloodGroup(savedBg);
       if (savedAvatar) setAvatar(JSON.parse(savedAvatar));
       if (savedRecords) setRecords(JSON.parse(savedRecords));
+      if (savedStepGoal) setStepGoal(parseInt(savedStepGoal));
       
       if (savedShare !== null) setShareData(savedShare === 'true');
       if (savedBio !== null) setBiometric(savedBio === 'true');
@@ -88,12 +148,10 @@ export default function ProfileScreen({ navigation }) {
       const savedWeight = await AsyncStorage.getItem('@vital_sync_weight');
       const savedHr = await AsyncStorage.getItem('@vital_sync_hr');
       const savedSpo2 = await AsyncStorage.getItem('@vital_sync_spo2');
-      const savedSteps = await AsyncStorage.getItem('@vital_sync_steps_total');
 
       if (savedWeight) setWeight(savedWeight);
       if (savedHr) setHr(savedHr);
       if (savedSpo2) setSpo2(savedSpo2);
-      if (savedSteps) setSteps(savedSteps);
     } catch (e) {
       console.log("Error loading profile:", e);
     }
@@ -103,9 +161,27 @@ export default function ProfileScreen({ navigation }) {
     setCustomAlert({ visible: true, title, message, type, onConfirm });
   };
 
+  const showNotification = async (title, body) => {
+    try {
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: title,
+          body: body,
+          data: { screen: "Profile" },
+        },
+        trigger: null,
+      });
+    } catch (error) {
+      console.log('Notification error:', error);
+    }
+  };
+
   const handleShareDataToggle = async (value) => {
     setShareData(value);
     await AsyncStorage.setItem('@vital_share_data', value.toString());
+    if (value) {
+      await showNotification('Data Sharing Enabled', 'Your health data will now be shared with your healthcare providers.');
+    }
   };
 
   const handleBiometricToggle = async (value) => {
@@ -126,10 +202,12 @@ export default function ProfileScreen({ navigation }) {
       if (auth.success) {
         setBiometric(true);
         await AsyncStorage.setItem('@vital_biometric_lock', 'true');
+        await showNotification('App Lock Enabled', 'Biometric authentication has been enabled for VitalSync.');
       }
     } else {
       setBiometric(false);
       await AsyncStorage.setItem('@vital_biometric_lock', 'false');
+      await showNotification('App Lock Disabled', 'Biometric authentication has been turned off.');
     }
   };
 
@@ -156,6 +234,7 @@ export default function ProfileScreen({ navigation }) {
     await AsyncStorage.setItem('@vital_user_age', age);
     await AsyncStorage.setItem('@vital_user_bg', bloodGroup);
     setIsEditProfileVisible(false);
+    await showNotification('Profile Updated', 'Your profile information has been saved successfully.');
   };
 
   const handleAvatarSelect = async (gender, index) => {
@@ -163,6 +242,7 @@ export default function ProfileScreen({ navigation }) {
     setAvatar(newAvatar);
     await AsyncStorage.setItem('@vital_user_avatar', JSON.stringify(newAvatar));
     setIsAvatarModalVisible(false);
+    await showNotification('Avatar Updated', 'Your profile picture has been changed.');
   };
 
   const pickImageFromGallery = async () => {
@@ -177,6 +257,7 @@ export default function ProfileScreen({ navigation }) {
       setAvatar(newAvatar);
       await AsyncStorage.setItem('@vital_user_avatar', JSON.stringify(newAvatar));
       setIsAvatarModalVisible(false);
+      await showNotification('Avatar Updated', 'Your profile picture has been changed.');
     }
   };
 
@@ -186,7 +267,6 @@ export default function ProfileScreen({ navigation }) {
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const file = result.assets[0];
         
-        // Remove the forced .pdf fallback to prevent corrupting image uploads
         const fileName = file.name || `Record_${Date.now()}`;
         const permanentUri = FileSystem.documentDirectory + fileName.replace(/\s+/g, '_');
         
@@ -201,13 +281,14 @@ export default function ProfileScreen({ navigation }) {
           date: new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
           doctor: 'Self Uploaded',
           uri: permanentUri,
-          mimeType: file.mimeType // <-- SAVE THE EXACT MIME TYPE DIRECTLY FROM THE OS
+          mimeType: file.mimeType
         };
         
         const updatedRecords = [newRecord, ...records];
         setRecords(updatedRecords);
         await AsyncStorage.setItem('@vital_medical_records', JSON.stringify(updatedRecords));
         showWarning('Success', 'Medical record uploaded securely!', 'success');
+        await showNotification('Record Uploaded', `${file.name} has been added to your medical records.`);
       }
     } catch (error) {
       console.log(error);
@@ -221,10 +302,10 @@ export default function ProfileScreen({ navigation }) {
       setRecords(updatedRecords);
       await AsyncStorage.setItem('@vital_medical_records', JSON.stringify(updatedRecords));
       setCustomAlert({ visible: false });
+      await showNotification('Record Deleted', 'The medical record has been removed.');
     });
   };
 
-  // --- UPDATED: Securely opening local files via Sharing API ---
   const openRecord = async (record) => {
     if (!record || !record.uri) {
       showWarning('Unavailable', 'This is a sample record and cannot be opened.', 'info');
@@ -240,7 +321,6 @@ export default function ProfileScreen({ navigation }) {
         return;
       }
 
-      // 1. Get exact MIME type from the saved record, with a smart fallback
       let exactMimeType = record.mimeType;
       if (!exactMimeType) {
         const lowerUri = uri.toLowerCase();
@@ -254,19 +334,16 @@ export default function ProfileScreen({ navigation }) {
         const contentUri = await FileSystem.getContentUriAsync(uri);
 
         try {
-          // 2. Launch Android Native Viewer with the EXACT type
           await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
             data: contentUri,
-            flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
+            flags: 1,
             type: exactMimeType,
           });
         } catch (intentErr) {
            console.log("Intent Viewer failed:", intentErr);
-           // 3. Fallback to Sharing if the viewer intent is blocked
            await Sharing.shareAsync(uri, { mimeType: exactMimeType });
         }
       } else {
-        // iOS Native Sharing API handles both images and PDFs automatically
         await Sharing.shareAsync(uri, { mimeType: exactMimeType });
       }
     } catch (e) {
@@ -279,8 +356,94 @@ export default function ProfileScreen({ navigation }) {
     showWarning("Log Out", "Are you sure you want to log out of your account?", "warning", async () => {
       setCustomAlert({ visible: false });
       await AsyncStorage.removeItem('@vital_is_logged_in');
+      await showNotification('Logged Out', 'You have been successfully logged out.');
       navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
     });
+  };
+
+  // --- PDF EXPORT FUNCTION ---
+  const exportHealthData = async () => {
+    try {
+      const htmlContent = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: 'Helvetica', 'Arial', sans-serif; padding: 40px; color: #1C1C1E; }
+            h1 { color: #5E5CE6; border-bottom: 2px solid #5E5CE6; padding-bottom: 10px; }
+            h2 { color: #1C1C1E; margin-top: 30px; font-size: 20px; border-bottom: 1px solid #E5E5EA; padding-bottom: 5px; }
+            .section { margin-bottom: 30px; }
+            .row { display: flex; flex-direction: row; justify-content: space-between; margin-bottom: 10px; }
+            .label { font-weight: bold; color: #8E8E93; width: 40%; }
+            .value { font-weight: bold; width: 60%; }
+            .record-item { background-color: #F8F9FF; padding: 15px; border-radius: 8px; margin-bottom: 10px; }
+            .record-title { font-weight: bold; font-size: 16px; margin-bottom: 5px; }
+            .record-sub { color: #636366; font-size: 14px; }
+            .footer { margin-top: 50px; font-size: 12px; color: #C7C7CC; text-align: center; }
+          </style>
+        </head>
+        <body>
+          <h1>VitalSync Health Report</h1>
+          <p style="color: #8E8E93; font-style: italic;">Exported on: ${new Date().toLocaleString()}</p>
+          
+          <div class="section">
+            <h2>Personal Information</h2>
+            <div class="row"><span class="label">Patient Name:</span><span class="value">${name}</span></div>
+            <div class="row"><span class="label">Age:</span><span class="value">${age}</span></div>
+            <div class="row"><span class="label">Blood Group:</span><span class="value">${bloodGroup}</span></div>
+            <div class="row"><span class="label">Health ID:</span><span class="value">${healthId}</span></div>
+          </div>
+
+          <div class="section">
+            <h2>Current Vitals</h2>
+            <div class="row"><span class="label">Weight:</span><span class="value">${weight} kg</span></div>
+            <div class="row"><span class="label">Heart Rate (Avg):</span><span class="value">${hr} bpm</span></div>
+            <div class="row"><span class="label">Blood Oxygen (SpO2):</span><span class="value">${spo2}%</span></div>
+            <div class="row"><span class="label">Daily Steps (Current):</span><span class="value">${steps.toLocaleString()} / ${stepGoal.toLocaleString()}</span></div>
+          </div>
+
+          <div class="section">
+            <h2>Medical Records History</h2>
+            ${records.length === 0 ? '<p>No records uploaded.</p>' : records.map(r => `
+              <div class="record-item">
+                <div class="record-title">${r.title}</div>
+                <div class="record-sub">Doctor/Source: ${r.doctor} | Uploaded: ${r.date}</div>
+              </div>
+            `).join('')}
+          </div>
+
+          <div class="footer">
+            Report securely generated by VitalSync Mobile Application.
+          </div>
+        </body>
+        </html>
+      `;
+
+      const { uri } = await Print.printToFileAsync({
+        html: htmlContent,
+        base64: false
+      });
+
+      // Define a custom filename
+      const pdfName = `VitalSync_Report_${name.replace(/\s+/g, '_')}_${Date.now()}.pdf`;
+      const permanentUri = FileSystem.documentDirectory + pdfName;
+      
+      await FileSystem.copyAsync({
+        from: uri,
+        to: permanentUri
+      });
+
+      await Sharing.shareAsync(permanentUri, {
+        mimeType: 'application/pdf',
+        dialogTitle: 'Export Health Report',
+        UTI: 'com.adobe.pdf'
+      });
+      
+      await showNotification('Report Exported', 'Your PDF health report is ready to share.');
+    } catch (error) {
+      console.log('PDF Export error:', error);
+      showWarning('Export Failed', 'Could not generate the PDF report.', 'error');
+    }
   };
 
   const getAvatarSource = () => {
@@ -319,7 +482,7 @@ export default function ProfileScreen({ navigation }) {
           <View style={styles.statDivider} />
           <View style={styles.statBox}>
             <Text style={styles.statValue}>{weight} <Text style={{fontSize: 12}}>kg</Text></Text>
-            <Text style={styles.statLabel}>Weight (Health)</Text>
+            <Text style={styles.statLabel}>Weight</Text>
           </View>
         </View>
 
@@ -334,20 +497,28 @@ export default function ProfileScreen({ navigation }) {
 
         {activeTab === 'records' ? (
           <View style={styles.tabContent}>
-            {records.map(rec => (
-              <TouchableOpacity key={rec.id} style={styles.recordCard} onPress={() => openRecord(rec)}>
-                <View style={styles.recordIconWrap}>
-                  <Ionicons name="document-text" size={24} color="#5E5CE6" />
-                </View>
-                <View style={{flex: 1}}>
-                  <Text style={styles.recordTitle} numberOfLines={1}>{rec.title}</Text>
-                  <Text style={styles.recordSub}>{rec.doctor} • {rec.date}</Text>
-                </View>
-                <TouchableOpacity onPress={() => deleteRecord(rec.id)} style={styles.deleteIconBtn}>
-                  <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+            {records.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Ionicons name="folder-open-outline" size={48} color="#C7C7CC" />
+                <Text style={styles.emptyStateText}>No medical records yet</Text>
+                <Text style={styles.emptyStateSubtext}>Upload your first medical record</Text>
+              </View>
+            ) : (
+              records.map(rec => (
+                <TouchableOpacity key={rec.id} style={styles.recordCard} onPress={() => openRecord(rec)}>
+                  <View style={styles.recordIconWrap}>
+                    <Ionicons name="document-text" size={24} color="#5E5CE6" />
+                  </View>
+                  <View style={{flex: 1}}>
+                    <Text style={styles.recordTitle} numberOfLines={1}>{rec.title}</Text>
+                    <Text style={styles.recordSub}>{rec.doctor} • {rec.date}</Text>
+                  </View>
+                  <TouchableOpacity onPress={() => deleteRecord(rec.id)} style={styles.deleteIconBtn}>
+                    <Ionicons name="trash-outline" size={20} color="#FF3B30" />
+                  </TouchableOpacity>
                 </TouchableOpacity>
-              </TouchableOpacity>
-            ))}
+              ))
+            )}
             <TouchableOpacity style={styles.addRecordBtn} onPress={handleUploadRecord}>
               <Ionicons name="add" size={18} color="#5E5CE6" />
               <Text style={styles.addRecordText}>Upload Medical Record</Text>
@@ -366,12 +537,18 @@ export default function ProfileScreen({ navigation }) {
                 <Text style={styles.summaryBoxVal}>{spo2} <Text style={{fontSize:12}}>%</Text></Text>
                 <View style={[styles.statusBadge, {backgroundColor: '#E8F5E9'}]}><Text style={styles.statusTextGreen}>Normal</Text></View>
               </View>
-              <View style={styles.summaryBox}>
+              <TouchableOpacity style={styles.summaryBox} onPress={() => navigation.navigate('StepsDetail')}>
                 <View style={[styles.summaryIconBg, {backgroundColor: '#F0FDF4'}]}><MaterialCommunityIcons name="shoe-sneaker" size={24} color="#34C759" /></View>
-                <Text style={styles.summaryBoxVal}>{steps}</Text>
+                <Text style={styles.summaryBoxVal}>{steps.toLocaleString()}</Text>
                 <Text style={{fontSize: 10, color: '#5E5CE6', fontWeight: '700', marginTop: 4}}>steps</Text>
-              </View>
+                <Text style={{fontSize: 9, color: '#8E8E93', marginTop: 2}}>Goal: {stepGoal}</Text>
+              </TouchableOpacity>
             </View>
+            
+            <TouchableOpacity style={styles.exportBtn} onPress={exportHealthData}>
+              <MaterialCommunityIcons name="file-pdf-box" size={20} color="#FF3B30" />
+              <Text style={styles.exportBtnText}>Export Health Report</Text>
+            </TouchableOpacity>
           </View>
         )}
 
@@ -461,6 +638,7 @@ export default function ProfileScreen({ navigation }) {
                 <Text style={styles.infoText}>Age: <Text style={styles.infoVal}>{age}</Text></Text>
                 <Text style={styles.infoText}>Blood Group: <Text style={styles.infoVal}>{bloodGroup}</Text></Text>
                 <Text style={styles.infoText}>Health ID: <Text style={styles.infoVal}>{healthId}</Text></Text>
+                <Text style={styles.infoText}>Step Goal: <Text style={styles.infoVal}>{stepGoal.toLocaleString()} steps</Text></Text>
               </View>
             )}
 
@@ -507,7 +685,7 @@ export default function ProfileScreen({ navigation }) {
 
             {activeMenuModal === 'Connect' && (
               <View>
-                <TouchableOpacity style={styles.connectRow} onPress={() => openLink('fayizulrahuman2005@gmail.com')}>
+                <TouchableOpacity style={styles.connectRow} onPress={() => openLink('mailto:fayizulrahuman2005@gmail.com')}>
                   <View style={[styles.connectIconBg, {backgroundColor: '#FFF0F0'}]}><Ionicons name="mail" size={20} color="#FF3B30" /></View>
                   <Text style={styles.connectText}>Email Support</Text>
                   <Ionicons name="open-outline" size={18} color="#8E8E93" />
@@ -641,6 +819,9 @@ const styles = StyleSheet.create({
 
   // Tab Content
   tabContent: { minHeight: 180, marginBottom: 25 },
+  emptyState: { alignItems: 'center', paddingVertical: 40 },
+  emptyStateText: { fontSize: 16, fontWeight: '600', color: '#8E8E93', marginTop: 12 },
+  emptyStateSubtext: { fontSize: 13, color: '#C7C7CC', marginTop: 4 },
   recordCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', padding: 15, borderRadius: 16, marginBottom: 10, shadowColor: '#000', shadowOpacity: 0.02, shadowRadius: 5, elevation: 1 },
   recordIconWrap: { width: 40, height: 40, borderRadius: 12, backgroundColor: '#F4F4FF', justifyContent: 'center', alignItems: 'center', marginRight: 15 },
   recordTitle: { fontSize: 15, fontWeight: '700', color: '#1C1C1E', marginBottom: 2 },
@@ -649,12 +830,14 @@ const styles = StyleSheet.create({
   addRecordBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F4F4FF', paddingVertical: 16, borderRadius: 16, marginTop: 5, borderWidth: 1, borderColor: '#5E5CE6', borderStyle: 'dashed' },
   addRecordText: { color: '#5E5CE6', fontSize: 14, fontWeight: '700', marginLeft: 6 },
   
-  summaryGrid: { flexDirection: 'row', justifyContent: 'space-between' },
+  summaryGrid: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 15 },
   summaryBox: { width: '31%', backgroundColor: '#FFFFFF', padding: 15, borderRadius: 16, alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 8, elevation: 2 },
   summaryIconBg: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
   summaryBoxVal: { fontSize: 18, fontWeight: '800', color: '#1C1C1E', marginBottom: 6 },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8 },
   statusTextGreen: { color: '#15803D', fontSize: 10, fontWeight: '700' },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFF5E5', paddingVertical: 14, borderRadius: 12, marginTop: 5 },
+  exportBtnText: { color: '#FF3B30', fontSize: 14, fontWeight: '700', marginLeft: 8 },
 
   // Menu Section
   menuSection: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 20, shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 10, elevation: 2 },

@@ -1,10 +1,28 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Modal, TextInput, ActivityIndicator, Platform, AppState } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
-import { Pedometer, Accelerometer } from 'expo-sensors';
-import { CameraView, useCameraPermissions } from 'expo-camera';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as Notifications from 'expo-notifications';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, AppState, Linking, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+// Conditionally import native Android pedometer
+let AndroidPedometer = null;
+if (Platform.OS === 'android') {
+  try {
+    AndroidPedometer = require('expo-android-pedometer');
+  } catch (e) {
+    console.log('Native pedometer not available. Make sure you are using your dev-client build.');
+  }
+}
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
 
 export default function HealthScreen({ navigation }) {
   // --- Core Health States ---
@@ -15,15 +33,13 @@ export default function HealthScreen({ navigation }) {
   const [spo2, setSpo2] = useState('98');
   const [sleepTime, setSleepTime] = useState('0h 0m');
   
+  // --- Background Tracking State ---
+  const [isBackgroundActive, setIsBackgroundActive] = useState(false);
+  
   // --- Refs ---
-  const baseStepsRef = useRef(0);
   const pedometerSubscription = useRef(null);
-  const lastStepTime = useRef(0);
   
   // --- Modal States ---
-  const [isWeightModalVisible, setWeightModalVisible] = useState(false);
-  const [newWeight, setNewWeight] = useState(weight);
-  
   const [isAddRecordVisible, setIsAddRecordVisible] = useState(false);
   const [recordType, setRecordType] = useState('Weight');
   const [recordValue, setRecordValue] = useState('');
@@ -38,21 +54,98 @@ export default function HealthScreen({ navigation }) {
   const [currentInsightIndex, setCurrentInsightIndex] = useState(0);
   const insights = generateInsights(heartRate, spo2, steps, stepGoal);
 
+  // --- Initialize Permissions & Tracking ---
   useEffect(() => {
+    const initializeSystems = async () => {
+      await requestNotifPermissions();
+      if (Platform.OS === 'android' && AndroidPedometer) {
+        await setupNativeAndroidTracking();
+      }
+    };
+    
+    initializeSystems();
     loadData();
-    setupPedometer();
-    setupSleepTracker();
 
-    // Auto-cycle insights every 5 seconds
+    const subscription = AppState.addEventListener('change', handleAppStateChange);
     const insightInterval = setInterval(() => {
       setCurrentInsightIndex((prev) => (prev + 1) % insights.length);
     }, 5000);
-
+    
     return () => {
-      if (pedometerSubscription.current) pedometerSubscription.current.remove();
+      subscription.remove();
       clearInterval(insightInterval);
+      if (pedometerSubscription.current) pedometerSubscription.current.remove();
     };
-  }, [heartRate, spo2, steps, stepGoal]);
+  }, []);
+
+  const requestNotifPermissions = async () => {
+    const { status } = await Notifications.getPermissionsAsync();
+    if (status !== 'granted') await Notifications.requestPermissionsAsync();
+  };
+
+  // --- NATIVE ANDROID STEP TRACKING (MODERN APPROACH) ---
+  const setupNativeAndroidTracking = async () => {
+    try {
+      await AndroidPedometer.initialize();
+
+      // 1. Check & Request Physical Activity Permission
+      const activityPerm = await AndroidPedometer.getActivityPermissionStatus();
+      if (!activityPerm.granted) {
+        const permResponse = await AndroidPedometer.requestPermissions();
+        if (!permResponse.granted) {
+          Alert.alert("Permission Needed", "We need Activity Recognition to count your steps using the device hardware.", [{ text: "OK" }]);
+          return;
+        }
+      }
+
+      // 2. Setup Persistent Background Service
+      await AndroidPedometer.setupBackgroundUpdates({
+        title: "VitalSync",
+        contentTemplate: "Steps today: %d",
+        style: "bigText",
+      });
+
+      setIsBackgroundActive(true);
+
+      // 3. Sync Initial Data
+      const nativeSteps = await AndroidPedometer.getStepsCountAsync();
+      await syncDailySteps(nativeSteps);
+
+      // 4. Listen for Hardware Updates
+      pedometerSubscription.current = AndroidPedometer.subscribeToChange(async (event) => {
+        setSteps(event.steps);
+        await AsyncStorage.setItem('@vital_sync_steps_total', event.steps.toString());
+        checkGoalAchievement(event.steps);
+      });
+
+    } catch (error) {
+      console.error('Failed to start native pedometer:', error);
+    }
+  };
+
+  const syncDailySteps = async (nativeSteps) => {
+    const todayKey = new Date().toDateString();
+    const savedDate = await AsyncStorage.getItem('@vital_sync_step_date');
+    
+    if (savedDate !== todayKey) {
+      await AsyncStorage.setItem('@vital_sync_step_date', todayKey);
+      await AsyncStorage.setItem('@vital_sync_steps_total', nativeSteps.toString());
+      setSteps(nativeSteps);
+    } else {
+      const storedSteps = await AsyncStorage.getItem('@vital_sync_steps_total');
+      const finalSteps = Math.max(parseInt(storedSteps || 0), nativeSteps);
+      setSteps(finalSteps);
+      await AsyncStorage.setItem('@vital_sync_steps_total', finalSteps.toString());
+    }
+    checkGoalAchievement(nativeSteps);
+  };
+
+  const handleAppStateChange = async (nextAppState) => {
+    if (nextAppState === 'active' && isBackgroundActive && AndroidPedometer) {
+      const nativeSteps = await AndroidPedometer.getStepsCountAsync();
+      await syncDailySteps(nativeSteps);
+    }
+  };
 
   // --- Dynamic Insights Engine ---
   function generateInsights(hr, o2, currentSteps, goal) {
@@ -78,112 +171,39 @@ export default function HealthScreen({ navigation }) {
     return generated;
   }
 
-  const loadData = async () => {
-    const savedWeight = await AsyncStorage.getItem('@vital_sync_weight');
-    const savedHR = await AsyncStorage.getItem('@vital_sync_hr');
-    const savedSpo2 = await AsyncStorage.getItem('@vital_sync_spo2');
-    const savedSleep = await AsyncStorage.getItem('@vital_sync_sleep');
-    const savedGoal = await AsyncStorage.getItem('@vital_sync_step_goal');
+  // --- Notifications & Storage ---
+  const checkGoalAchievement = async (currentSteps) => {
+    const today = new Date().toDateString();
+    const lastNotifDate = await AsyncStorage.getItem('@vital_sync_last_goal_notif_date');
     
-    if (savedWeight) setWeight(savedWeight);
-    if (savedHR) setHeartRate(savedHR);
-    if (savedSpo2) setSpo2(savedSpo2);
-    if (savedSleep) setSleepTime(savedSleep);
-    if (savedGoal) setStepGoal(parseInt(savedGoal));
-  };
-
-  // --- Intelligent Sleep Tracker (App State Based) ---
-  const setupSleepTracker = () => {
-    AppState.addEventListener('change', async (nextAppState) => {
-      if (nextAppState.match(/inactive|background/)) {
-        const now = new Date();
-        // If app goes to background at night (after 8 PM or before 6 AM)
-        if (now.getHours() >= 20 || now.getHours() <= 6) {
-          await AsyncStorage.setItem('@vital_sync_sleep_start', now.getTime().toString());
-        }
-      } else if (nextAppState === 'active') {
-        const sleepStart = await AsyncStorage.getItem('@vital_sync_sleep_start');
-        if (sleepStart) {
-          const startMs = parseInt(sleepStart);
-          const nowMs = new Date().getTime();
-          const diffHours = (nowMs - startMs) / (1000 * 60 * 60);
-          
-          // If asleep for more than 2 hours, record it
-          if (diffHours >= 2) {
-            const hrs = Math.floor(diffHours);
-            const mins = Math.floor((diffHours - hrs) * 60);
-            const sleepStr = `${hrs}h ${mins}m`;
-            setSleepTime(sleepStr);
-            await AsyncStorage.setItem('@vital_sync_sleep', sleepStr);
-          }
-          await AsyncStorage.removeItem('@vital_sync_sleep_start');
-        }
-      }
-    });
-  };
-
-  const setupPedometer = async () => {
-    try {
-      const today = new Date().toDateString();
-      const savedDate = await AsyncStorage.getItem('@vital_sync_step_date');
-      let storedSteps = 0;
-
-      if (savedDate === today) {
-        const val = await AsyncStorage.getItem('@vital_sync_steps_total');
-        if (val) storedSteps = parseInt(val);
-      } else {
-        await AsyncStorage.setItem('@vital_sync_step_date', today);
-        await AsyncStorage.setItem('@vital_sync_steps_total', '0');
-      }
-
-      baseStepsRef.current = storedSteps;
-      setSteps(storedSteps);
-
-      const { status } = await Pedometer.requestPermissionsAsync();
-      
-      if (status === 'granted') {
-        pedometerSubscription.current = Pedometer.watchStepCount(result => {
-          const currentTotal = baseStepsRef.current + result.steps;
-          setSteps(currentTotal);
-          AsyncStorage.setItem('@vital_sync_steps_total', currentTotal.toString());
-        });
-      } else {
-        // FALLBACK FOR XIAOMI/MIUI
-        Accelerometer.setUpdateInterval(150);
-        pedometerSubscription.current = Accelerometer.addListener(data => {
-          const magnitude = Math.sqrt(data.x*data.x + data.y*data.y + data.z*data.z);
-          if (magnitude > 1.2) {
-            const now = Date.now();
-            if (now - lastStepTime.current > 400) {
-              lastStepTime.current = now;
-              baseStepsRef.current += 1;
-              setSteps(baseStepsRef.current);
-              AsyncStorage.setItem('@vital_sync_steps_total', baseStepsRef.current.toString());
-            }
-          }
-        });
-      }
-    } catch (error) {
-      console.log("Pedometer init error:", error);
+    if (currentSteps >= stepGoal && lastNotifDate !== today) {
+      await Notifications.scheduleNotificationAsync({
+        content: { title: "🎉 Step Goal Achieved!", body: `You reached your goal of ${stepGoal} steps!`, data: { screen: "Health" } },
+        trigger: null,
+      });
+      await AsyncStorage.setItem('@vital_sync_last_goal_notif_date', today);
     }
   };
 
-  // --- Manual Add Record ---
+  const loadData = async () => {
+    const keys = ['weight', 'hr', 'spo2', 'sleep', 'step_goal'];
+    const values = await Promise.all(keys.map(k => AsyncStorage.getItem(`@vital_sync_${k}`)));
+    
+    if (values[0]) setWeight(values[0]);
+    if (values[1]) setHeartRate(values[1]);
+    if (values[2]) setSpo2(values[2]);
+    if (values[3]) setSleepTime(values[3]);
+    if (values[4]) setStepGoal(parseInt(values[4]));
+  };
+
   const handleSaveRecord = async () => {
     if (!recordValue) return;
-    if (recordType === 'Weight') {
-      setWeight(recordValue);
-      await AsyncStorage.setItem('@vital_sync_weight', recordValue);
-    } else if (recordType === 'Sleep') {
-      setSleepTime(recordValue);
-      await AsyncStorage.setItem('@vital_sync_sleep', recordValue);
-    } else if (recordType === 'HR') {
-      setHeartRate(recordValue);
-      await AsyncStorage.setItem('@vital_sync_hr', recordValue);
-    } else if (recordType === 'SpO2') {
-      setSpo2(recordValue);
-      await AsyncStorage.setItem('@vital_sync_spo2', recordValue);
-    }
+    const typeMap = { 'Weight': setWeight, 'Sleep': setSleepTime, 'HR': setHeartRate, 'SpO2': setSpo2 };
+    const storageMap = { 'Weight': 'weight', 'Sleep': 'sleep', 'HR': 'hr', 'SpO2': 'spo2' };
+    
+    typeMap[recordType](recordValue);
+    await AsyncStorage.setItem(`@vital_sync_${storageMap[recordType]}`, recordValue);
+    
     setRecordValue('');
     setIsAddRecordVisible(false);
   };
@@ -235,14 +255,19 @@ export default function HealthScreen({ navigation }) {
         <View style={{ width: 44, marginRight: 10 }} /> 
       </View>
 
+      {isBackgroundActive && Platform.OS === 'android' && (
+        <View style={styles.bgIndicator}>
+          <MaterialCommunityIcons name="checkbox-marked-circle-outline" size={14} color="#34C759" />
+          <Text style={styles.bgIndicatorText}>Native step tracking active</Text>
+        </View>
+      )}
+
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Health Overview</Text>
         </View>
 
-        {/* OVERVIEW GRID */}
         <View style={styles.gridContainer}>
-          
           <TouchableOpacity style={styles.gridCard} onPress={startPpgMeasurement}>
             <View style={[styles.iconBg, {backgroundColor: '#FFF0F0'}]}><Ionicons name="heart" size={20} color="#FF3B30" /></View>
             <Text style={styles.cardLabel}>Heart Rate</Text>
@@ -279,7 +304,6 @@ export default function HealthScreen({ navigation }) {
           </TouchableOpacity>
         </View>
 
-        {/* DYNAMIC HEALTH INSIGHTS */}
         <View style={styles.sectionHeaderRow}>
           <View style={{flexDirection: 'row', alignItems: 'center'}}>
             <MaterialCommunityIcons name="creation" size={18} color="#5E5CE6" />
@@ -304,7 +328,6 @@ export default function HealthScreen({ navigation }) {
           </View>
         </View>
 
-        {/* TRACK YOUR HEALTH LIST */}
         <View style={styles.sectionHeaderRow}>
           <View>
             <Text style={[styles.sectionTitle, {marginBottom: 2}]}>Track Your Health</Text>
@@ -454,10 +477,23 @@ const styles = StyleSheet.create({
   headerTitle: { fontSize: 20, fontWeight: '800', color: '#1C1C1E', marginBottom: 2 },
   headerSubtitle: { fontSize: 13, color: '#8E8E93', fontWeight: '500' },
   
+  bgIndicator: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    backgroundColor: '#E8F5E9', 
+    paddingVertical: 6, 
+    paddingHorizontal: 12, 
+    marginHorizontal: 20, 
+    marginBottom: 10, 
+    borderRadius: 20,
+    alignSelf: 'center',
+  },
+  bgIndicatorText: { fontSize: 11, color: '#2E7D32', marginLeft: 6, fontWeight: '600' },
+  
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: 10, marginTop: 10 },
   sectionTitle: { fontSize: 18, fontWeight: '800', color: '#1C1C1E' },
   sectionSubtitle: { fontSize: 12, color: '#8E8E93', marginTop: 2 },
-  lastUpdatedText: { fontSize: 12, color: '#8E8E93', marginBottom: 15 },
   
   gridContainer: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', marginBottom: 10 },
   gridCard: { width: '48%', backgroundColor: '#FFFFFF', borderRadius: 20, padding: 15, marginBottom: 15, shadowColor: '#000', shadowOpacity: 0.03, shadowRadius: 8, elevation: 2, alignItems: 'center' },
