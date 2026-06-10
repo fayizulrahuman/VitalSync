@@ -1,50 +1,32 @@
-# Welcome to your Expo app 👋
+# 🌿 VitalSync
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+**VitalSync** is a comprehensive, React Native-based mobile health and wellness application designed to centralize personal medical data, track daily wellness scores, and provide immediate access to essential health utilities. 
 
-## Get started
+Built with a focus on modern UI/UX design and strict data security, VitalSync leverages Google Cloud and Firebase to ensure a seamless and protected experience for users managing their health journey.
 
-1. Install dependencies
+## ✨ Core Features
+* **Wellness Dashboard:** A dynamic, visual summary of your daily health metrics and overall wellness score.
+* **Medicine Reminder:** Intelligent notifications to help users stay on track with their prescribed schedules.
+* **Emergency Blood Network:** A rapid-response feature designed to connect users for emergency blood donations.
+* **Mental Health Check-In:** Dedicated tools to monitor emotional well-being and provide supportive care routines.
+* **Rural Health Assistant:** Offline-capable support tailored to provide essential health guidance to users in remote or Tier-2/Tier-3 areas.
+* **Secure Authentication:** Seamless onboarding using Firebase Authentication and Google Sign-In.
 
+## 🛠️ Tech Stack
+* **Framework:** React Native (Expo)
+* **Backend as a Service (BaaS):** Firebase (Authentication, Firestore, Storage)
+* **Cloud Build:** Expo Application Services (EAS)
+* **Version Control:** Git / GitHub (Private Repository)
+
+## 🚀 Getting Started
+
+### Prerequisites
+* Node.js and npm installed.
+* Expo CLI (`npm install -g expo-cli`).
+* An active Firebase project with Android/Web apps registered.
+
+### Local Installation
+1. Clone the repository:
    ```bash
-   npm install
-   ```
-
-2. Start the app
-
-   ```bash
-   npx expo start
-   ```
-
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
-
-```bash
-npm run reset-project
-```
-
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
-
-## Learn more
-
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+   git clone [https://github.com/fayizulrahuman/VitalSync.git](https://github.com/fayizulrahuman/VitalSync.git)
+   cd VitalSync
