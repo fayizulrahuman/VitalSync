@@ -75,5 +75,6 @@ Incorporates modern, soft-glassmorphism elements and a clean, accessible color p
 ## 👤 Author
 Developed and maintained by Fayizul Rahuman.
 
+You can find the latest stable version of the app in the Releases section. Download the .apk file directly to your Android device to start tracking!
 
 ---
